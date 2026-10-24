@@ -422,7 +422,10 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     if (droppedFindings.length > 0) {
       status = 'partial';
       reasonCode = 'invalid_findings_dropped';
-      SafeLogger.info(`Dropped ${droppedFindings.length} invalid findings (out of bounds or malformed)`);
+      SafeLogger.warning(`Dropped ${droppedFindings.length} invalid finding(s) (out of bounds or malformed):`);
+      for (const d of droppedFindings) {
+        SafeLogger.warning(`- ${d.reason}`);
+      }
     }
 
     // 9. Reconcile, deduplicate, recheck head SHA and publish comments (FR-07, FR-08, FR-12)

@@ -64,7 +64,22 @@ export function validateAndFilterFindings(
     }
 
     const finding = parseResult.data;
-    const filePatch = context.filePatchMap.get(finding.path);
+    const cleanPath = finding.path.replace(/^\.?\/+/, '');
+    let filePatch = context.filePatchMap.get(cleanPath) ?? context.filePatchMap.get(finding.path);
+
+    if (!filePatch) {
+      for (const [p, patch] of context.filePatchMap.entries()) {
+        const cleanP = p.replace(/^\.?\/+/, '');
+        if (
+          cleanP.toLowerCase() === cleanPath.toLowerCase() ||
+          cleanP.endsWith('/' + cleanPath) ||
+          cleanPath.endsWith('/' + cleanP)
+        ) {
+          filePatch = patch;
+          break;
+        }
+      }
+    }
 
     if (!filePatch) {
       droppedFindings.push({
@@ -74,7 +89,24 @@ export function validateAndFilterFindings(
       continue;
     }
 
-    if (!filePatch.addedLines.has(finding.line)) {
+    let matchedLine = finding.line;
+    if (!filePatch.addedLines.has(matchedLine)) {
+      // Check if there is an added line nearby (within +/- 2 lines tolerance for model off-by-one)
+      let nearestDist = Infinity;
+      let nearestLine = -1;
+      for (const added of filePatch.addedLines) {
+        const dist = Math.abs(added - finding.line);
+        if (dist <= 2 && dist < nearestDist) {
+          nearestDist = dist;
+          nearestLine = added;
+        }
+      }
+      if (nearestLine !== -1) {
+        matchedLine = nearestLine;
+      }
+    }
+
+    if (!filePatch.addedLines.has(matchedLine)) {
       droppedFindings.push({
         finding,
         reason: `Line ${finding.line} in '${finding.path}' is not an eligible added line in this diff`,
@@ -84,8 +116,8 @@ export function validateAndFilterFindings(
 
     // Sanitize text content
     validFindings.push({
-      path: finding.path,
-      line: finding.line,
+      path: filePatch.path,
+      line: matchedLine,
       severity: finding.severity as Severity,
       message: sanitizeFindingContent(finding.message),
       recommendation: sanitizeFindingContent(finding.recommendation),
