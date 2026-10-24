@@ -60,5 +60,22 @@ describe('Deduplication and fingerprinting', () => {
       fallbackFromModel: 'gemini-2.5-flash',
     });
     expect(summary).toContain('`gemini` / `gemini-2.5-flash-lite` *(fallback on 429)*');
+
+    const summary503 = formatSummaryComment({
+      status: 'completed',
+      model: 'gemini-2.5-flash-lite',
+      provider: 'gemini',
+      reviewedFiles: 1,
+      totalChangedFiles: 1,
+      skippedFilesCount: 0,
+      excludedReasons: {},
+      totalFindingsCount: 0,
+      novelFindingsCount: 0,
+      publishedFindingsCount: 0,
+      dedupedCount: 0,
+      fallbackFromModel: 'gemini-3.8-flash',
+      fallbackReason: 'provider_http_503',
+    });
+    expect(summary503).toContain('`gemini` / `gemini-2.5-flash-lite` *(fallback on 503)*');
   });
 });

@@ -266,6 +266,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
     let effectiveModel = config.model;
     let fallbackFromModel: string | undefined;
+    let fallbackReason: string | undefined;
 
     SafeLogger.info(`Sending ${reviewedFilesCount} file(s) to ${effectiveProvider} (${config.model || 'default'})...`);
 
@@ -302,16 +303,23 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
           ? providerErr.message
           : 'provider_request_failed';
 
-      // If rate limited (429) and an explicit fallback model is configured, attempt fallback
+      // If rate limited (429) or overloaded (503) and an explicit fallback model is configured, attempt fallback
+      const isCapacityError =
+        code === 'provider_http_429' ||
+        code.includes('429') ||
+        code === 'provider_http_503' ||
+        code.includes('503');
+
       if (
-        (code === 'provider_http_429' || code.includes('429')) &&
+        isCapacityError &&
         config.fallbackModel &&
         config.fallbackModel !== config.model &&
         !customProvider &&
         config.maxRequests >= 2
       ) {
+        const errorLabel = code.includes('503') ? 'overloaded (503)' : 'rate limited (429)';
         SafeLogger.warning(
-          `Primary model "${config.model}" rate limited (429). Attempting configured fallback model: "${config.fallbackModel}"...`
+          `Primary model "${config.model}" ${errorLabel}. Attempting configured fallback model: "${config.fallbackModel}"...`
         );
         const fallbackAbortController = new AbortController();
         const fallbackTimeout = setTimeout(() => fallbackAbortController.abort(), 120000);
@@ -335,6 +343,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
           if (fbResult.usage?.outputTokens) outputTokens = fbResult.usage.outputTokens;
           effectiveModel = config.fallbackModel;
           fallbackFromModel = config.model;
+          fallbackReason = code;
           reviewSucceeded = true;
         } catch (fallbackErr: unknown) {
           clearTimeout(fallbackTimeout);
@@ -437,6 +446,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         outputTokens,
         overview: aiSummary,
         fallbackFromModel,
+        fallbackReason,
       },
       config.maxFindings
     );

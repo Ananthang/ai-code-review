@@ -197,12 +197,22 @@ export function parseConfig(overrides?: Partial<Config>, workspaceRoot?: string)
     ? overrides.allowExternalProvider
     : parseBooleanInput(core.getInput('allow-external-provider'), false);
 
+  const fallbackModel = (
+    overrides?.fallbackModel ??
+    (core.getInput('fallback-model') ||
+      process.env.AI_FALLBACK_MODEL ||
+      process.env.FALLBACK_MODEL ||
+      process.env.GEMINI_FALLBACK_MODEL ||
+      '')
+  ).trim();
+
   const maxFiles = overrides?.maxFiles ?? parseNumberInput(core.getInput('max-files'), 20);
   const maxFileBytes = overrides?.maxFileBytes ?? parseNumberInput(core.getInput('max-file-bytes'), 20 * 1024);
   const maxInputBytes = overrides?.maxInputBytes ?? parseNumberInput(core.getInput('max-input-bytes'), 80 * 1024);
   const maxInputTokens = overrides?.maxInputTokens ?? parseNumberInput(core.getInput('max-input-tokens'), 24000);
   const maxOutputTokens = overrides?.maxOutputTokens ?? parseNumberInput(core.getInput('max-output-tokens'), 4000);
-  const maxRequests = overrides?.maxRequests ?? parseNumberInput(core.getInput('max-requests'), 1);
+  const maxRequestsDefault = fallbackModel ? 2 : 1;
+  const maxRequests = overrides?.maxRequests ?? parseNumberInput(core.getInput('max-requests'), maxRequestsDefault);
   const maxFindings = overrides?.maxFindings ?? parseNumberInput(core.getInput('max-findings'), 10);
 
   const reviewLanguage = (overrides?.reviewLanguage ?? (core.getInput('review-language') || 'English')).trim();
@@ -229,15 +239,6 @@ export function parseConfig(overrides?: Partial<Config>, workspaceRoot?: string)
     ? overrides.customInstructions
     : core.getInput('custom-instructions');
   const customInstructions = resolveCustomInstructions(rawCustomInstructions, workspaceRoot);
-
-  const fallbackModel = (
-    overrides?.fallbackModel ??
-    (core.getInput('fallback-model') ||
-      process.env.AI_FALLBACK_MODEL ||
-      process.env.FALLBACK_MODEL ||
-      process.env.GEMINI_FALLBACK_MODEL ||
-      '')
-  ).trim();
 
   // Mask sensitive values
   if (providerApiKey) {

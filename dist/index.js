@@ -42303,12 +42303,14 @@ function parseConfig(overrides, workspaceRoot) {
   const providerApiKey = overrides?.providerApiKey ?? (getInput("provider-api-key") || process.env[keyEnv[provider] ?? "AI_PROVIDER_API_KEY"] || "");
   const providerBaseUrl = overrides?.providerBaseUrl ?? (getInput("provider-base-url") || "http://127.0.0.1:11434");
   const allowExternal = overrides?.allowExternalProvider !== void 0 ? overrides.allowExternalProvider : parseBooleanInput(getInput("allow-external-provider"), false);
+  const fallbackModel = (overrides?.fallbackModel ?? (getInput("fallback-model") || process.env.AI_FALLBACK_MODEL || process.env.FALLBACK_MODEL || process.env.GEMINI_FALLBACK_MODEL || "")).trim();
   const maxFiles = overrides?.maxFiles ?? parseNumberInput(getInput("max-files"), 20);
   const maxFileBytes = overrides?.maxFileBytes ?? parseNumberInput(getInput("max-file-bytes"), 20 * 1024);
   const maxInputBytes = overrides?.maxInputBytes ?? parseNumberInput(getInput("max-input-bytes"), 80 * 1024);
   const maxInputTokens = overrides?.maxInputTokens ?? parseNumberInput(getInput("max-input-tokens"), 24e3);
   const maxOutputTokens = overrides?.maxOutputTokens ?? parseNumberInput(getInput("max-output-tokens"), 4e3);
-  const maxRequests = overrides?.maxRequests ?? parseNumberInput(getInput("max-requests"), 1);
+  const maxRequestsDefault = fallbackModel ? 2 : 1;
+  const maxRequests = overrides?.maxRequests ?? parseNumberInput(getInput("max-requests"), maxRequestsDefault);
   const maxFindings = overrides?.maxFindings ?? parseNumberInput(getInput("max-findings"), 10);
   const reviewLanguage = (overrides?.reviewLanguage ?? (getInput("review-language") || "English")).trim();
   const modeRaw = (overrides?.mode ?? (getInput("mode") || "comment")).trim();
@@ -42319,7 +42321,6 @@ function parseConfig(overrides, workspaceRoot) {
   const thinkingLevel = ["minimal", "low", "medium", "high"].includes(rawThinkingLevel) ? rawThinkingLevel : "medium";
   const rawCustomInstructions = overrides?.customInstructions !== void 0 ? overrides.customInstructions : getInput("custom-instructions");
   const customInstructions = resolveCustomInstructions(rawCustomInstructions, workspaceRoot);
-  const fallbackModel = (overrides?.fallbackModel ?? (getInput("fallback-model") || process.env.AI_FALLBACK_MODEL || process.env.FALLBACK_MODEL || process.env.GEMINI_FALLBACK_MODEL || "")).trim();
   if (providerApiKey) {
     setSecret(providerApiKey);
   }
@@ -47255,7 +47256,8 @@ function cleanMessage(text, maxLen = 100) {
 function formatSummaryComment(data) {
   const statusEmoji = data.status === "completed" ? "\u2705" : data.status === "partial" ? "\u26A0\uFE0F" : "\u2139\uFE0F";
   const cleanModel = data.model.replace(/^models\//, "");
-  const modelDisplay = data.fallbackFromModel ? `\`${data.provider}\` / \`${cleanModel}\` *(fallback on 429)*` : `\`${data.provider}\` / \`${cleanModel}\``;
+  const fallbackTag = data.fallbackReason?.includes("503") ? "fallback on 503" : "fallback on 429";
+  const modelDisplay = data.fallbackFromModel ? `\`${data.provider}\` / \`${cleanModel}\` *(${fallbackTag})*` : `\`${data.provider}\` / \`${cleanModel}\``;
   const lines = [
     `## ${statusEmoji} AI Code Review Summary`,
     "",
@@ -47910,6 +47912,7 @@ async function runReview(customClient, customProvider) {
     }
     let effectiveModel = config2.model;
     let fallbackFromModel;
+    let fallbackReason;
     SafeLogger.info(`Sending ${reviewedFilesCount} file(s) to ${effectiveProvider} (${config2.model || "default"})...`);
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), 12e4);
@@ -47934,9 +47937,11 @@ async function runReview(customClient, customProvider) {
       clearTimeout(timeout);
       const isAbort = providerErr instanceof Error && (providerErr.name === "AbortError" || providerErr.message.includes("aborted"));
       let code = isAbort ? "timeout" : providerErr instanceof Error && providerErr.message ? providerErr.message : "provider_request_failed";
-      if ((code === "provider_http_429" || code.includes("429")) && config2.fallbackModel && config2.fallbackModel !== config2.model && !customProvider && config2.maxRequests >= 2) {
+      const isCapacityError = code === "provider_http_429" || code.includes("429") || code === "provider_http_503" || code.includes("503");
+      if (isCapacityError && config2.fallbackModel && config2.fallbackModel !== config2.model && !customProvider && config2.maxRequests >= 2) {
+        const errorLabel = code.includes("503") ? "overloaded (503)" : "rate limited (429)";
         SafeLogger.warning(
-          `Primary model "${config2.model}" rate limited (429). Attempting configured fallback model: "${config2.fallbackModel}"...`
+          `Primary model "${config2.model}" ${errorLabel}. Attempting configured fallback model: "${config2.fallbackModel}"...`
         );
         const fallbackAbortController = new AbortController();
         const fallbackTimeout = setTimeout(() => fallbackAbortController.abort(), 12e4);
@@ -47960,6 +47965,7 @@ async function runReview(customClient, customProvider) {
           if (fbResult.usage?.outputTokens) outputTokens = fbResult.usage.outputTokens;
           effectiveModel = config2.fallbackModel;
           fallbackFromModel = config2.model;
+          fallbackReason = code;
           reviewSucceeded = true;
         } catch (fallbackErr) {
           clearTimeout(fallbackTimeout);
@@ -48047,7 +48053,8 @@ async function runReview(customClient, customProvider) {
         inputTokens,
         outputTokens,
         overview: aiSummary,
-        fallbackFromModel
+        fallbackFromModel,
+        fallbackReason
       },
       config2.maxFindings
     );

@@ -601,6 +601,20 @@ describe('Seven-issue regression coverage', () => {
     expect((await runReview(ready())).status).toBe('partial');
     expect(request).toHaveBeenCalledTimes(limit);
   });
+  it('falls back when primary model encounters 503 service unavailable', async () => {
+    vi.stubEnv('INPUT_MAX-REQUESTS', '2');
+    vi.stubEnv('INPUT_FALLBACK-MODEL', 'fallback-test');
+    let callCount = 0;
+    const request = vi.fn().mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) return new Response('', { status: 503 });
+      return new Response(JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"findings":[]}' }] } }] }));
+    });
+    vi.stubGlobal('fetch', request);
+    const outcome = await runReview(ready());
+    expect(outcome.status).toBe('completed');
+    expect(request).toHaveBeenCalledTimes(2);
+  });
   it('selects fewer files when instructions consume part of the input budget', async () => {
     const client = ready(); client.files.push({ ...client.files[0], filename: 'b.ts' });
     const customInstructions = 'Check null handling. '.repeat(100);

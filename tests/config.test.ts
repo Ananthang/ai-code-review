@@ -31,6 +31,7 @@ describe('Configuration parsing & limit ceilings', () => {
       fallbackModel: 'gemini-2.5-flash-lite',
     });
     expect(config.fallbackModel).toBe('gemini-2.5-flash-lite');
+    expect(config.maxRequests).toBe(2);
   });
 
   it('throws when model is missing from all inputs and env vars', () => {

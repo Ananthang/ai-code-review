@@ -27,6 +27,7 @@ export interface SummaryData {
   overview?: string;
   findingsList?: Finding[];
   fallbackFromModel?: string;
+  fallbackReason?: string;
 }
 
 const SEVERITY_ICONS: Record<Severity, string> = {
@@ -66,8 +67,9 @@ function cleanMessage(text: string, maxLen = 100): string {
 export function formatSummaryComment(data: SummaryData): string {
   const statusEmoji = data.status === 'completed' ? '✅' : data.status === 'partial' ? '⚠️' : 'ℹ️';
   const cleanModel = data.model.replace(/^models\//, '');
+  const fallbackTag = data.fallbackReason?.includes('503') ? 'fallback on 503' : 'fallback on 429';
   const modelDisplay = data.fallbackFromModel
-    ? `\`${data.provider}\` / \`${cleanModel}\` *(fallback on 429)*`
+    ? `\`${data.provider}\` / \`${cleanModel}\` *(${fallbackTag})*`
     : `\`${data.provider}\` / \`${cleanModel}\``;
 
   const lines: string[] = [
