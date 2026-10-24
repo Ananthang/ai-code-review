@@ -232,9 +232,10 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
     } catch (providerErr: unknown) {
       clearTimeout(timeout);
-      SafeLogger.error('Provider review failed; response and error body withheld.');
+      const code = providerErr instanceof Error && providerErr.message ? providerErr.message : 'provider_request_failed';
+      SafeLogger.error(`Provider review failed (${code}); response and error body withheld.`);
       status = 'partial';
-      reasonCode = 'provider_request_failed';
+      reasonCode = code;
       return setActionOutputs({
         status,
         reasonCode,

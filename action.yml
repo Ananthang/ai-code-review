@@ -90,5 +90,5 @@ outputs:
     description: 'Actual or estimated output token count'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'

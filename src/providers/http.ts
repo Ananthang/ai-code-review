@@ -121,9 +121,16 @@ export class HttpProvider implements AIProvider {
       let outputTokens: unknown;
       switch (this.name) {
         case 'gemini':
-          if (data.candidates?.[0]?.finishReason !== 'STOP') throw new Error('incomplete_response');
-          text = data.candidates[0].content.parts.filter((p: any) => !p.thought).map((p: any) => p.text ?? '').join('');
-          inputTokens = data.usageMetadata?.promptTokenCount; outputTokens = data.usageMetadata?.candidatesTokenCount;
+          const finishReason = data.candidates?.[0]?.finishReason;
+          if (finishReason && !['STOP', 'MAX_TOKENS'].includes(finishReason)) {
+            throw new Error('incomplete_response');
+          }
+          text = (data.candidates?.[0]?.content?.parts ?? [])
+            .filter((p: any) => !p.thought)
+            .map((p: any) => p.text ?? '')
+            .join('');
+          inputTokens = data.usageMetadata?.promptTokenCount;
+          outputTokens = data.usageMetadata?.candidatesTokenCount;
           break;
         case 'openai':
           if (data.status !== 'completed') throw new Error('incomplete_response');
@@ -142,7 +149,16 @@ export class HttpProvider implements AIProvider {
           inputTokens = data.prompt_eval_count; outputTokens = data.eval_count;
           break;
       }
-      const parsed = ProviderResponseSchema.safeParse(JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')));
+      const rawText = text.trim();
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      const cleanJson = jsonMatch ? jsonMatch[0] : rawText.replace(/^```(?:json)?\s*|\s*```$/g, '');
+      let parsedJson: unknown;
+      try {
+        parsedJson = JSON.parse(cleanJson);
+      } catch {
+        throw new Error('invalid_response');
+      }
+      const parsed = ProviderResponseSchema.safeParse(parsedJson);
       if (!parsed.success) throw new Error('invalid_response');
       const count = (n: unknown) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
       return { ...parsed.data, usage: { inputTokens: count(inputTokens), outputTokens: count(outputTokens) } };

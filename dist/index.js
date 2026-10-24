@@ -46974,8 +46974,11 @@ var HttpProvider = class {
       let outputTokens;
       switch (this.name) {
         case "gemini":
-          if (data.candidates?.[0]?.finishReason !== "STOP") throw new Error("incomplete_response");
-          text = data.candidates[0].content.parts.filter((p) => !p.thought).map((p) => p.text ?? "").join("");
+          const finishReason = data.candidates?.[0]?.finishReason;
+          if (finishReason && !["STOP", "MAX_TOKENS"].includes(finishReason)) {
+            throw new Error("incomplete_response");
+          }
+          text = (data.candidates?.[0]?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? "").join("");
           inputTokens = data.usageMetadata?.promptTokenCount;
           outputTokens = data.usageMetadata?.candidatesTokenCount;
           break;
@@ -46998,7 +47001,16 @@ var HttpProvider = class {
           outputTokens = data.eval_count;
           break;
       }
-      const parsed = ProviderResponseSchema.safeParse(JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "")));
+      const rawText = text.trim();
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      const cleanJson = jsonMatch ? jsonMatch[0] : rawText.replace(/^```(?:json)?\s*|\s*```$/g, "");
+      let parsedJson;
+      try {
+        parsedJson = JSON.parse(cleanJson);
+      } catch {
+        throw new Error("invalid_response");
+      }
+      const parsed = ProviderResponseSchema.safeParse(parsedJson);
       if (!parsed.success) throw new Error("invalid_response");
       const count = (n) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : void 0;
       return { ...parsed.data, usage: { inputTokens: count(inputTokens), outputTokens: count(outputTokens) } };
@@ -47642,9 +47654,10 @@ async function runReview(customClient, customProvider) {
       if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
     } catch (providerErr) {
       clearTimeout(timeout);
-      SafeLogger.error("Provider review failed; response and error body withheld.");
+      const code = providerErr instanceof Error && providerErr.message ? providerErr.message : "provider_request_failed";
+      SafeLogger.error(`Provider review failed (${code}); response and error body withheld.`);
       status = "partial";
-      reasonCode = "provider_request_failed";
+      reasonCode = code;
       return setActionOutputs({
         status,
         reasonCode,
