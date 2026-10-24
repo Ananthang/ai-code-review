@@ -198,6 +198,33 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       status = 'skipped';
       reasonCode = 'all_files_exceeded_budgets';
       SafeLogger.info('All eligible files exceeded configured size or token budgets.');
+
+      const repoFullName = `${prDetails.owner}/${prDetails.repo}`;
+      try {
+        await publishFindingsAndSummary(
+          client,
+          repoFullName,
+          prDetails.pullNumber,
+          prDetails.headSha,
+          [],
+          {
+            status,
+            reasonCode,
+            model: config.model,
+            provider: effectiveProvider,
+            reviewedFiles: 0,
+            totalChangedFiles: ghFiles.length,
+            skippedFilesCount: ghFiles.length,
+            excludedReasons,
+            inputTokens: 0,
+            outputTokens: 0,
+          },
+          config.maxFindings
+        );
+      } catch {
+        // Safe fallback if GitHub comment publishing fails
+      }
+
       return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
@@ -232,10 +259,44 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
     } catch (providerErr: unknown) {
       clearTimeout(timeout);
-      const code = providerErr instanceof Error && providerErr.message ? providerErr.message : 'provider_request_failed';
+      const isAbort =
+        providerErr instanceof Error &&
+        (providerErr.name === 'AbortError' || providerErr.message.includes('aborted'));
+      const code = isAbort
+        ? 'timeout'
+        : providerErr instanceof Error && providerErr.message
+          ? providerErr.message
+          : 'provider_request_failed';
       SafeLogger.error(`Provider review failed (${code}); response and error body withheld.`);
       status = 'partial';
       reasonCode = code;
+
+      const repoFullName = `${prDetails.owner}/${prDetails.repo}`;
+      try {
+        await publishFindingsAndSummary(
+          client,
+          repoFullName,
+          prDetails.pullNumber,
+          prDetails.headSha,
+          [],
+          {
+            status,
+            reasonCode,
+            model: config.model,
+            provider: effectiveProvider,
+            reviewedFiles: reviewedFilesCount,
+            totalChangedFiles: ghFiles.length,
+            skippedFilesCount: ghFiles.length - reviewedFilesCount,
+            excludedReasons,
+            inputTokens,
+            outputTokens,
+          },
+          config.maxFindings
+        );
+      } catch {
+        // Safe fallback if GitHub comment publishing fails
+      }
+
       return setActionOutputs({
         status,
         reasonCode,

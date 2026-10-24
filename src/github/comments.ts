@@ -74,10 +74,72 @@ export function formatSummaryComment(data: SummaryData): string {
     '',
   ];
 
+  // Specific guidance banners for common operational events
+  if (data.reasonCode === 'provider_http_429' || data.reasonCode?.includes('429')) {
+    lines.push('> [!WARNING]');
+    lines.push('> ### ⏳ Rate Limit / Quota Exceeded (Too Many Requests)');
+    lines.push('> The AI review could not be completed because the API request quota or rate limit was reached.');
+    lines.push('>');
+    lines.push('> **Why this happens:**');
+    lines.push('> - Free-tier AI models (e.g. Gemini 3.8 Flash) allow up to 15 requests per minute.');
+    lines.push('> - Rapid commits, re-runs, or multiple triggers on the same PR can briefly exhaust this quota.');
+    lines.push('>');
+    lines.push('> **How to resume:**');
+    lines.push('> 1. Wait **1 to 2 minutes** for the rate-limit window to reset.');
+    lines.push('> 2. Comment `/review` on this PR to re-trigger a fresh review.');
+    lines.push('');
+  } else if (data.reasonCode === 'all_files_exceeded_budgets' || data.reasonCode === 'request_budget_exceeded') {
+    lines.push('> [!WARNING]');
+    lines.push('> ### 📏 PR Exceeds Token / Size Budget');
+    lines.push('> The changes in this pull request exceed the configured review token or file size budget.');
+    lines.push('>');
+    lines.push('> **How to review this PR:**');
+    lines.push('> - **Review specific files individually:** Comment on this PR with the path to the file you want to review:');
+    lines.push('>   ```');
+    lines.push('>   /review path/to/file.ts');
+    lines.push('>   ```');
+    lines.push('> - **Increase budget in workflow YAML:** Adjust `max-input-tokens` or `max-input-bytes`:');
+    lines.push('>   ```yaml');
+    lines.push('>   with:');
+    lines.push('>     max-input-tokens: 60000');
+    lines.push('>     max-input-bytes: 200000');
+    lines.push('>   ```');
+    lines.push('');
+  } else if (
+    data.reasonCode &&
+    !data.reasonCode.includes('429') &&
+    data.reasonCode !== 'invalid_findings_dropped' &&
+    data.reasonCode !== 'static_reports_skipped' &&
+    data.reasonCode !== 'publication_incomplete' &&
+    data.reasonCode !== 'stale_head_discarded' &&
+    data.status !== 'completed'
+  ) {
+    lines.push('> [!WARNING]');
+    lines.push(`> ### ⚠️ AI Provider Service Notice (\`${data.reasonCode}\`)`);
+    lines.push('> The AI provider encountered an issue while generating the review.');
+    lines.push('>');
+    lines.push('> **How to resume:**');
+    lines.push('> - Wait a moment and comment `/review` on this PR to try again.');
+    lines.push('');
+  }
+
+  const hasBudgetExclusions = Object.keys(data.excludedReasons).some((r) =>
+    r.includes('exceeded') || r.includes('limit_reached')
+  );
+  if (hasBudgetExclusions && data.reasonCode !== 'request_budget_exceeded' && data.reasonCode !== 'all_files_exceeded_budgets') {
+    lines.push('> [!NOTE]');
+    lines.push('> Some files were skipped due to token or size limits. You can review them individually by commenting `/review <file-path>`.');
+    lines.push('');
+  }
+
   // 1. Overview description
   lines.push('### 📝 Overview of Changes');
   if (data.overview && data.overview.trim()) {
     lines.push(sanitizeFindingContent(data.overview.trim()));
+  } else if (data.reasonCode === 'provider_http_429' || data.reasonCode?.includes('429')) {
+    lines.push('Review halted before completion due to API rate limiting (HTTP 429). See alert above for recovery steps.');
+  } else if (data.reasonCode === 'request_budget_exceeded' || data.reasonCode === 'all_files_exceeded_budgets') {
+    lines.push('Review skipped because the PR changes exceeded the configured token or size limits.');
   } else if (data.reviewedFiles === 0) {
     lines.push('No eligible code files were found to review after applying exclusions.');
   } else {

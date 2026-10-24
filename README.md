@@ -28,7 +28,7 @@ permissions:
   issues: write
 concurrency:
   group: ai-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   review:
     if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft

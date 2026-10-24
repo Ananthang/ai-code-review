@@ -414,3 +414,94 @@ describe('Reaction timing', () => {
     } });
   });
 });
+
+describe('Rate limit and budget overage handling', () => {
+  beforeEach(() => {
+    process.env.GITHUB_TOKEN = 'test-token';
+    process.env.AI_MODEL = 'gemini-3.8-flash';
+    process.env['INPUT_ALLOW-EXTERNAL-PROVIDER'] = 'true';
+    process.env['INPUT_PROVIDER-API-KEY'] = 'test-key';
+  });
+
+  it('publishes actionable advisory summary comment when provider is rate-limited (HTTP 429)', async () => {
+    const client = new MockGitHubClient();
+    client.files = [
+      {
+        filename: 'src/user.ts',
+        status: 'modified',
+        patch: BUGGY_PATCH,
+        additions: 3,
+        deletions: 1,
+        changes: 4,
+      },
+    ];
+
+    const rateLimitedProvider = {
+      name: 'gemini',
+      review: async () => {
+        throw new Error('provider_http_429');
+      },
+    };
+
+    const outcome = await runReview(client, rateLimitedProvider as any);
+    expect(outcome.status).toBe('partial');
+    expect(outcome.reasonCode).toBe('provider_http_429');
+    expect(client.publishedSummaries).toHaveLength(1);
+    expect(client.publishedSummaries[0]).toContain('Rate Limit / Quota Exceeded (Too Many Requests)');
+    expect(client.publishedSummaries[0]).toContain('/review');
+  });
+
+  it('publishes actionable summary when all files exceed budget limits', async () => {
+    const client = new MockGitHubClient();
+    // Valid patch with 10 lines of 3000 bytes each (30,000 bytes > 20,480 maxFileBytes)
+    const longLine = '+' + 'x'.repeat(3000) + '\n';
+    const oversizedPatch = '@@ -0,0 +1,10 @@\n' + longLine.repeat(10);
+    client.files = [
+      {
+        filename: 'src/large.ts',
+        status: 'added',
+        patch: oversizedPatch,
+        additions: 10,
+        deletions: 0,
+        changes: 10,
+      },
+    ];
+
+    const provider = new FakeProvider();
+    const outcome = await runReview(client, provider);
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('all_files_exceeded_budgets');
+    expect(client.publishedSummaries).toHaveLength(1);
+    expect(client.publishedSummaries[0]).toContain('PR Exceeds Token / Size Budget');
+    expect(client.publishedSummaries[0]).toContain('/review path/to/file.ts');
+  });
+
+  it('publishes advisory summary when provider times out', async () => {
+    const client = new MockGitHubClient();
+    client.files = [
+      {
+        filename: 'src/user.ts',
+        status: 'modified',
+        patch: BUGGY_PATCH,
+        additions: 3,
+        deletions: 1,
+        changes: 4,
+      },
+    ];
+
+    const timingOutProvider = {
+      name: 'gemini',
+      review: async () => {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        throw err;
+      },
+    };
+
+    const outcome = await runReview(client, timingOutProvider as any);
+    expect(outcome.status).toBe('partial');
+    expect(outcome.reasonCode).toBe('timeout');
+    expect(client.publishedSummaries).toHaveLength(1);
+    expect(client.publishedSummaries[0]).toContain('AI Provider Service Notice (`timeout`)');
+  });
+});
