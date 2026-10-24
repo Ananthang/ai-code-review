@@ -15,8 +15,9 @@ inputs:
     required: false
     default: 'gemini'
   model:
-    description: 'Explicit model identifier for the selected provider (e.g. gemini-2.5-flash)'
-    required: true
+    description: 'Explicit model identifier for the selected provider (e.g. gemini-2.5-flash). Can also be configured via GitHub variable or environment variable (AI_MODEL, MODEL, GEMINI_MODEL).'
+    required: false
+    default: ''
   provider-api-key:
     description: 'API key for the external AI provider'
     required: false

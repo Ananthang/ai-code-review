@@ -18,7 +18,11 @@ describe('Configuration parsing & limit ceilings', () => {
     expect(config.mode).toBe('comment');
   });
 
-  it('throws when model is missing', () => {
+  it('throws when model is missing from all inputs and env vars', () => {
+    delete process.env.AI_MODEL;
+    delete process.env.MODEL;
+    delete process.env.GEMINI_MODEL;
+    delete process.env.VARS_AI_MODEL;
     expect(() =>
       parseConfig({
         githubToken: 'ghp_test',
@@ -26,6 +30,39 @@ describe('Configuration parsing & limit ceilings', () => {
         model: '',
       })
     ).toThrow(/model must be explicitly specified/);
+  });
+
+  it('reads model from AI_MODEL environment or GitHub variable', () => {
+    process.env.AI_MODEL = 'gemini-2.5-flash';
+    const config = parseConfig({
+      githubToken: 'ghp_test',
+      provider: 'gemini',
+    });
+    expect(config.model).toBe('gemini-2.5-flash');
+    delete process.env.AI_MODEL;
+  });
+
+  it('reads model from MODEL environment or GitHub variable', () => {
+    delete process.env.AI_MODEL;
+    process.env.MODEL = 'gemini-2.5-pro';
+    const config = parseConfig({
+      githubToken: 'ghp_test',
+      provider: 'gemini',
+    });
+    expect(config.model).toBe('gemini-2.5-pro');
+    delete process.env.MODEL;
+  });
+
+  it('reads model from GEMINI_MODEL environment or GitHub variable', () => {
+    delete process.env.AI_MODEL;
+    delete process.env.MODEL;
+    process.env.GEMINI_MODEL = 'gemini-2.5-flash-custom';
+    const config = parseConfig({
+      githubToken: 'ghp_test',
+      provider: 'gemini',
+    });
+    expect(config.model).toBe('gemini-2.5-flash-custom');
+    delete process.env.GEMINI_MODEL;
   });
 
   it('throws when github-token is missing', () => {

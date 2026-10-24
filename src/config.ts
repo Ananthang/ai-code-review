@@ -16,7 +16,10 @@ export const LIMIT_CEILINGS = {
 export const ConfigSchema = z.object({
   githubToken: z.string().min(1, 'github-token is required'),
   provider: z.string().min(1, 'provider is required'),
-  model: z.string().min(1, 'model must be explicitly specified (no silent substitution)'),
+  model: z.string().min(
+    1,
+    'model must be explicitly specified (no silent substitution). Configure via "model" input or GitHub variable / env var (e.g. AI_MODEL, MODEL, GEMINI_MODEL)'
+  ),
   providerApiKey: z.string().default(''),
   allowExternalProvider: z.boolean().default(false),
   maxFiles: z.number().int().positive().max(LIMIT_CEILINGS.MAX_FILES),
@@ -61,7 +64,16 @@ function parseNumberInput(raw: string | number | undefined, defaultValue: number
 export function parseConfig(overrides?: Partial<Config>): Config {
   const githubToken = overrides?.githubToken ?? (core.getInput('github-token') || process.env.GITHUB_TOKEN || '');
   const provider = (overrides?.provider ?? (core.getInput('provider') || 'gemini')).trim().toLowerCase();
-  const model = (overrides?.model ?? (core.getInput('model') || process.env.AI_MODEL || '')).trim();
+  const model = (
+    overrides?.model ??
+    (core.getInput('model') ||
+      process.env.AI_MODEL ||
+      process.env.MODEL ||
+      process.env.GEMINI_MODEL ||
+      process.env.VARS_AI_MODEL ||
+      process.env.VARS_MODEL ||
+      '')
+  ).trim();
   const providerApiKey = overrides?.providerApiKey ?? (core.getInput('provider-api-key') || process.env.GEMINI_API_KEY || '');
 
   const allowExternal = overrides?.allowExternalProvider !== undefined
