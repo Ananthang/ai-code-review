@@ -82,4 +82,5 @@ export interface Config {
   failOnError: boolean;
   thinkingLevel: ThinkingLevel;
   customInstructions?: string;
+  fallbackModel?: string;
 }

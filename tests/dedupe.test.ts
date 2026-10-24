@@ -5,7 +5,7 @@ import {
   isSummaryComment,
   SUMMARY_MARKER,
 } from '../src/review/dedupe.js';
-import { formatFindingComment } from '../src/github/comments.js';
+import { formatFindingComment, formatSummaryComment } from '../src/github/comments.js';
 import { Finding } from '../src/types.js';
 
 describe('Deduplication and fingerprinting', () => {
@@ -42,5 +42,23 @@ describe('Deduplication and fingerprinting', () => {
   it('detects summary comments', () => {
     expect(isSummaryComment(`## Summary\n\n${SUMMARY_MARKER}`)).toBe(true);
     expect(isSummaryComment('## Normal Comment without marker')).toBe(false);
+  });
+
+  it('formats summary with fallback notice when fallbackFromModel is provided', () => {
+    const summary = formatSummaryComment({
+      status: 'completed',
+      model: 'gemini-2.5-flash-lite',
+      provider: 'gemini',
+      reviewedFiles: 1,
+      totalChangedFiles: 1,
+      skippedFilesCount: 0,
+      excludedReasons: {},
+      totalFindingsCount: 0,
+      novelFindingsCount: 0,
+      publishedFindingsCount: 0,
+      dedupedCount: 0,
+      fallbackFromModel: 'gemini-2.5-flash',
+    });
+    expect(summary).toContain('`gemini` / `gemini-2.5-flash-lite` *(fallback on 429)*');
   });
 });

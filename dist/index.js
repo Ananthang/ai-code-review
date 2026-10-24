@@ -42182,7 +42182,8 @@ var ConfigSchema = external_exports.object({
   staticReportPaths: external_exports.array(external_exports.string()).default([]),
   failOnError: external_exports.boolean().default(false),
   thinkingLevel: external_exports.enum(["minimal", "low", "medium", "high"]).default("medium"),
-  customInstructions: external_exports.string().optional()
+  customInstructions: external_exports.string().optional(),
+  fallbackModel: external_exports.string().default("")
 });
 function parseSplitLines(raw) {
   if (!raw || !raw.trim()) return [];
@@ -42305,6 +42306,7 @@ function parseConfig(overrides, workspaceRoot) {
   const thinkingLevel = ["minimal", "low", "medium", "high"].includes(rawThinkingLevel) ? rawThinkingLevel : "medium";
   const rawCustomInstructions = overrides?.customInstructions !== void 0 ? overrides.customInstructions : getInput("custom-instructions");
   const customInstructions = resolveCustomInstructions(rawCustomInstructions, workspaceRoot);
+  const fallbackModel = (overrides?.fallbackModel ?? (getInput("fallback-model") || process.env.AI_FALLBACK_MODEL || process.env.FALLBACK_MODEL || process.env.GEMINI_FALLBACK_MODEL || "")).trim();
   if (providerApiKey) {
     setSecret(providerApiKey);
   }
@@ -42331,7 +42333,8 @@ function parseConfig(overrides, workspaceRoot) {
     staticReportPaths,
     failOnError,
     thinkingLevel,
-    customInstructions
+    customInstructions,
+    fallbackModel
   };
   const parsed = ConfigSchema.safeParse(rawConfig);
   if (!parsed.success) {
@@ -47245,12 +47248,13 @@ function cleanMessage(text, maxLen = 100) {
 function formatSummaryComment(data) {
   const statusEmoji = data.status === "completed" ? "\u2705" : data.status === "partial" ? "\u26A0\uFE0F" : "\u2139\uFE0F";
   const cleanModel = data.model.replace(/^models\//, "");
+  const modelDisplay = data.fallbackFromModel ? `\`${data.provider}\` / \`${cleanModel}\` *(fallback on 429)*` : `\`${data.provider}\` / \`${cleanModel}\``;
   const lines = [
     `## ${statusEmoji} AI Code Review Summary`,
     "",
     `| Status | Provider & Model | Reviewed Files | Findings |`,
     `| :--- | :--- | :--- | :--- |`,
-    `| **${data.status.toUpperCase()}${data.reasonCode ? ` (${data.reasonCode})` : ""}** | \`${data.provider}\` / \`${cleanModel}\` | **${data.reviewedFiles}** of ${data.totalChangedFiles} | **${data.publishedFindingsCount}** new (${data.dedupedCount} deduped) |`,
+    `| **${data.status.toUpperCase()}${data.reasonCode ? ` (${data.reasonCode})` : ""}** | ${modelDisplay} | **${data.reviewedFiles}** of ${data.totalChangedFiles} | **${data.publishedFindingsCount}** new (${data.dedupedCount} deduped) |`,
     ""
   ];
   if (data.reasonCode === "provider_http_429" || data.reasonCode?.includes("429")) {
@@ -47878,11 +47882,14 @@ async function runReview(customClient, customProvider) {
     if (config2.customInstructions) {
       SafeLogger.info("Applying custom review guidelines / instructions.");
     }
+    let effectiveModel = config2.model;
+    let fallbackFromModel;
     SafeLogger.info(`Sending ${reviewedFilesCount} file(s) to ${effectiveProvider} (${config2.model || "default"})...`);
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), 12e4);
     let rawFindings = [];
     let aiSummary;
+    let reviewSucceeded = false;
     try {
       const reviewInput = {
         files: budget.includedFiles.map((f) => ({ path: f.path, patch: f.patch })),
@@ -47896,48 +47903,85 @@ async function runReview(customClient, customProvider) {
       aiSummary = result.summary;
       if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;
       if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
+      reviewSucceeded = true;
     } catch (providerErr) {
       clearTimeout(timeout);
       const isAbort = providerErr instanceof Error && (providerErr.name === "AbortError" || providerErr.message.includes("aborted"));
-      const code = isAbort ? "timeout" : providerErr instanceof Error && providerErr.message ? providerErr.message : "provider_request_failed";
-      SafeLogger.error(`Provider review failed (${code}); response and error body withheld.`);
-      status = "partial";
-      reasonCode = code;
-      const repoFullName2 = `${prDetails.owner}/${prDetails.repo}`;
-      try {
-        await publishFindingsAndSummary(
-          client,
-          repoFullName2,
-          prDetails.pullNumber,
-          prDetails.headSha,
-          [],
-          {
-            status,
-            reasonCode,
-            model: config2.model,
-            provider: effectiveProvider,
-            reviewedFiles: reviewedFilesCount,
-            totalChangedFiles: ghFiles.length,
-            skippedFilesCount: ghFiles.length - reviewedFilesCount,
-            excludedReasons,
-            inputTokens,
-            outputTokens
-          },
-          config2.maxFindings
+      let code = isAbort ? "timeout" : providerErr instanceof Error && providerErr.message ? providerErr.message : "provider_request_failed";
+      if ((code === "provider_http_429" || code.includes("429")) && config2.fallbackModel && config2.fallbackModel !== config2.model && !customProvider) {
+        SafeLogger.warning(
+          `Primary model "${config2.model}" rate limited (429). Attempting configured fallback model: "${config2.fallbackModel}"...`
         );
-      } catch {
+        const fallbackAbortController = new AbortController();
+        const fallbackTimeout = setTimeout(() => fallbackAbortController.abort(), 12e4);
+        try {
+          const fallbackProvider = createProvider({
+            ...config2,
+            model: config2.fallbackModel
+          });
+          const reviewInput = {
+            files: budget.includedFiles.map((f) => ({ path: f.path, patch: f.patch })),
+            maxFindings: config2.maxFindings,
+            language: config2.reviewLanguage,
+            customInstructions: config2.customInstructions
+          };
+          const fbResult = await fallbackProvider.review(reviewInput, fallbackAbortController.signal);
+          clearTimeout(fallbackTimeout);
+          SafeLogger.info("AI review response received from fallback model. Validating findings...");
+          rawFindings = fbResult.findings;
+          aiSummary = fbResult.summary;
+          if (fbResult.usage?.inputTokens) inputTokens = fbResult.usage.inputTokens;
+          if (fbResult.usage?.outputTokens) outputTokens = fbResult.usage.outputTokens;
+          effectiveModel = config2.fallbackModel;
+          fallbackFromModel = config2.model;
+          reviewSucceeded = true;
+        } catch (fallbackErr) {
+          clearTimeout(fallbackTimeout);
+          const isFbAbort = fallbackErr instanceof Error && (fallbackErr.name === "AbortError" || fallbackErr.message.includes("aborted"));
+          code = isFbAbort ? "timeout" : fallbackErr instanceof Error && fallbackErr.message ? fallbackErr.message : "provider_request_failed";
+          SafeLogger.error(`Fallback model "${config2.fallbackModel}" also failed (${code}).`);
+        }
       }
-      if (config2.failOnError) {
-        setFailed(`AI Code Review incomplete: ${reasonCode}`);
+      if (!reviewSucceeded) {
+        SafeLogger.error(`Provider review failed (${code}); response and error body withheld.`);
+        status = "partial";
+        reasonCode = code;
+        const repoFullName2 = `${prDetails.owner}/${prDetails.repo}`;
+        try {
+          await publishFindingsAndSummary(
+            client,
+            repoFullName2,
+            prDetails.pullNumber,
+            prDetails.headSha,
+            [],
+            {
+              status,
+              reasonCode,
+              model: effectiveModel,
+              provider: effectiveProvider,
+              reviewedFiles: reviewedFilesCount,
+              totalChangedFiles: ghFiles.length,
+              skippedFilesCount: ghFiles.length - reviewedFilesCount,
+              excludedReasons,
+              inputTokens,
+              outputTokens
+            },
+            config2.maxFindings
+          );
+        } catch {
+        }
+        if (config2.failOnError) {
+          setFailed(`AI Code Review incomplete: ${reasonCode}`);
+        }
+        return setActionOutputs({
+          status,
+          reasonCode,
+          reviewedFiles: reviewedFilesCount,
+          publishedFindings: 0,
+          inputTokens,
+          outputTokens
+        });
       }
-      return setActionOutputs({
-        status,
-        reasonCode,
-        reviewedFiles: reviewedFilesCount,
-        publishedFindings: 0,
-        inputTokens,
-        outputTokens
-      });
     } finally {
       clearTimeout(timeout);
     }
@@ -47971,7 +48015,7 @@ async function runReview(customClient, customProvider) {
       {
         status,
         reasonCode,
-        model: config2.model,
+        model: effectiveModel,
         provider: effectiveProvider,
         reviewedFiles: reviewedFilesCount,
         totalChangedFiles: ghFiles.length,
@@ -47979,7 +48023,8 @@ async function runReview(customClient, customProvider) {
         excludedReasons,
         inputTokens,
         outputTokens,
-        overview: aiSummary
+        overview: aiSummary,
+        fallbackFromModel
       },
       config2.maxFindings
     );

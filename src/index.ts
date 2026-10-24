@@ -246,6 +246,9 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       SafeLogger.info('Applying custom review guidelines / instructions.');
     }
 
+    let effectiveModel = config.model;
+    let fallbackFromModel: string | undefined;
+
     SafeLogger.info(`Sending ${reviewedFilesCount} file(s) to ${effectiveProvider} (${config.model || 'default'})...`);
 
     // 6. Provider execution with 120-second timeout (gives reasoning models like gemini-3.8-flash sufficient time)
@@ -254,6 +257,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
     let rawFindings: Finding[] = [];
     let aiSummary: string | undefined;
+    let reviewSucceeded = false;
     try {
       const reviewInput: ReviewInput = {
         files: budget.includedFiles.map((f) => ({ path: f.path, patch: f.patch })),
@@ -268,58 +272,109 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       aiSummary = result.summary;
       if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;
       if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
+      reviewSucceeded = true;
     } catch (providerErr: unknown) {
       clearTimeout(timeout);
       const isAbort =
         providerErr instanceof Error &&
         (providerErr.name === 'AbortError' || providerErr.message.includes('aborted'));
-      const code = isAbort
+      let code = isAbort
         ? 'timeout'
         : providerErr instanceof Error && providerErr.message
           ? providerErr.message
           : 'provider_request_failed';
-      SafeLogger.error(`Provider review failed (${code}); response and error body withheld.`);
-      status = 'partial';
-      reasonCode = code;
 
-      const repoFullName = `${prDetails.owner}/${prDetails.repo}`;
-      try {
-        await publishFindingsAndSummary(
-          client,
-          repoFullName,
-          prDetails.pullNumber,
-          prDetails.headSha,
-          [],
-          {
-            status,
-            reasonCode,
-            model: config.model,
-            provider: effectiveProvider,
-            reviewedFiles: reviewedFilesCount,
-            totalChangedFiles: ghFiles.length,
-            skippedFilesCount: ghFiles.length - reviewedFilesCount,
-            excludedReasons,
-            inputTokens,
-            outputTokens,
-          },
-          config.maxFindings
+      // If rate limited (429) and an explicit fallback model is configured, attempt fallback
+      if (
+        (code === 'provider_http_429' || code.includes('429')) &&
+        config.fallbackModel &&
+        config.fallbackModel !== config.model &&
+        !customProvider
+      ) {
+        SafeLogger.warning(
+          `Primary model "${config.model}" rate limited (429). Attempting configured fallback model: "${config.fallbackModel}"...`
         );
-      } catch {
-        // Safe fallback if GitHub comment publishing fails
+        const fallbackAbortController = new AbortController();
+        const fallbackTimeout = setTimeout(() => fallbackAbortController.abort(), 120000);
+        try {
+          const fallbackProvider = createProvider({
+            ...config,
+            model: config.fallbackModel,
+          });
+          const reviewInput: ReviewInput = {
+            files: budget.includedFiles.map((f) => ({ path: f.path, patch: f.patch })),
+            maxFindings: config.maxFindings,
+            language: config.reviewLanguage,
+            customInstructions: config.customInstructions,
+          };
+          const fbResult = await fallbackProvider.review(reviewInput, fallbackAbortController.signal);
+          clearTimeout(fallbackTimeout);
+          SafeLogger.info('AI review response received from fallback model. Validating findings...');
+          rawFindings = fbResult.findings;
+          aiSummary = fbResult.summary;
+          if (fbResult.usage?.inputTokens) inputTokens = fbResult.usage.inputTokens;
+          if (fbResult.usage?.outputTokens) outputTokens = fbResult.usage.outputTokens;
+          effectiveModel = config.fallbackModel;
+          fallbackFromModel = config.model;
+          reviewSucceeded = true;
+        } catch (fallbackErr: unknown) {
+          clearTimeout(fallbackTimeout);
+          const isFbAbort =
+            fallbackErr instanceof Error &&
+            (fallbackErr.name === 'AbortError' || fallbackErr.message.includes('aborted'));
+          code = isFbAbort
+            ? 'timeout'
+            : fallbackErr instanceof Error && fallbackErr.message
+              ? fallbackErr.message
+              : 'provider_request_failed';
+          SafeLogger.error(`Fallback model "${config.fallbackModel}" also failed (${code}).`);
+        }
       }
 
-      if (config.failOnError) {
-        core.setFailed(`AI Code Review incomplete: ${reasonCode}`);
-      }
+      if (!reviewSucceeded) {
+        SafeLogger.error(`Provider review failed (${code}); response and error body withheld.`);
+        status = 'partial';
+        reasonCode = code;
 
-      return setActionOutputs({
-        status,
-        reasonCode,
-        reviewedFiles: reviewedFilesCount,
-        publishedFindings: 0,
-        inputTokens,
-        outputTokens,
-      });
+        const repoFullName = `${prDetails.owner}/${prDetails.repo}`;
+        try {
+          await publishFindingsAndSummary(
+            client,
+            repoFullName,
+            prDetails.pullNumber,
+            prDetails.headSha,
+            [],
+            {
+              status,
+              reasonCode,
+              model: effectiveModel,
+              provider: effectiveProvider,
+              reviewedFiles: reviewedFilesCount,
+              totalChangedFiles: ghFiles.length,
+              skippedFilesCount: ghFiles.length - reviewedFilesCount,
+              excludedReasons,
+              inputTokens,
+              outputTokens,
+            },
+            config.maxFindings
+          );
+        } catch {
+          // Safe fallback if GitHub comment publishing fails
+        }
+
+        if (config.failOnError) {
+          core.setFailed(`AI Code Review incomplete: ${reasonCode}`);
+        }
+
+        return setActionOutputs({
+          status,
+          reasonCode,
+          reviewedFiles: reviewedFilesCount,
+          publishedFindings: 0,
+          inputTokens,
+          outputTokens,
+        });
+      }
     } finally {
       clearTimeout(timeout);
     }
@@ -356,7 +411,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       {
         status,
         reasonCode,
-        model: config.model,
+        model: effectiveModel,
         provider: effectiveProvider,
         reviewedFiles: reviewedFilesCount,
         totalChangedFiles: ghFiles.length,
@@ -365,6 +420,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         inputTokens,
         outputTokens,
         overview: aiSummary,
+        fallbackFromModel,
       },
       config.maxFindings
     );

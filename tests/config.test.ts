@@ -20,6 +20,17 @@ describe('Configuration parsing & limit ceilings', () => {
     expect(config.allowExternalProvider).toBe(false);
     expect(config.mode).toBe('comment');
     expect(config.thinkingLevel).toBe('medium');
+    expect(config.fallbackModel).toBe('');
+  });
+
+  it('parses explicit fallback-model when provided', () => {
+    const config = parseConfig({
+      githubToken: 'ghp_fake_token',
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      fallbackModel: 'gemini-2.5-flash-lite',
+    });
+    expect(config.fallbackModel).toBe('gemini-2.5-flash-lite');
   });
 
   it('throws when model is missing from all inputs and env vars', () => {

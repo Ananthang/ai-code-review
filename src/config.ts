@@ -41,6 +41,7 @@ export const ConfigSchema = z.object({
   failOnError: z.boolean().default(false),
   thinkingLevel: z.enum(['minimal', 'low', 'medium', 'high']).default('medium'),
   customInstructions: z.string().optional(),
+  fallbackModel: z.string().default(''),
 });
 
 function parseSplitLines(raw: string): string[] {
@@ -224,6 +225,15 @@ export function parseConfig(overrides?: Partial<Config>, workspaceRoot?: string)
     : core.getInput('custom-instructions');
   const customInstructions = resolveCustomInstructions(rawCustomInstructions, workspaceRoot);
 
+  const fallbackModel = (
+    overrides?.fallbackModel ??
+    (core.getInput('fallback-model') ||
+      process.env.AI_FALLBACK_MODEL ||
+      process.env.FALLBACK_MODEL ||
+      process.env.GEMINI_FALLBACK_MODEL ||
+      '')
+  ).trim();
+
   // Mask sensitive values
   if (providerApiKey) {
     core.setSecret(providerApiKey);
@@ -253,6 +263,7 @@ export function parseConfig(overrides?: Partial<Config>, workspaceRoot?: string)
     failOnError,
     thinkingLevel,
     customInstructions,
+    fallbackModel,
   };
 
   const parsed = ConfigSchema.safeParse(rawConfig);

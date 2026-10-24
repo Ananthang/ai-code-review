@@ -52,7 +52,8 @@ For local Ollama, use the separate instructions in [PROVIDERS.md](docs/PROVIDERS
 | --- | --- |
 | `github-token` | GitHub Actions token; use the standard `GITHUB_TOKEN` bot identity |
 | `provider` | `gemini`; also `openai`, `anthropic`, `ollama`, `fake` |
-| `model` | Required explicit identifier; no substitution or fallback |
+| `model` | Required explicit identifier for the primary review model |
+| `fallback-model` | Optional; fallback model to attempt if primary hits HTTP 429 rate limit (e.g. `gemini-2.5-flash-lite`) |
 | `provider-api-key` | Required for cloud providers; optional Ollama bearer key |
 | `provider-base-url` | Ollama only: `http://127.0.0.1:11434`; remote requires HTTPS and opt-in |
 | `allow-external-provider` | `false`; must be true for cloud or remote Ollama |
@@ -157,6 +158,24 @@ You can also write custom guidelines directly inside your workflow file:
 
 > [!NOTE]
 > To temporarily disable custom rules when a `.github/ai-review.md` exists, set `custom-instructions: 'none'` or `'off'`.
+
+## Handling Rate Limits (`fallback-model`)
+
+If you are using Google AI Studio free tier and frequently hit `429 Too Many Requests` during rapid commit pushes, you can configure an optional `fallback-model` (such as `gemini-2.5-flash-lite`):
+
+```yaml
+- uses: Ananthang/ai-code-review@v1
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    provider-api-key: ${{ secrets.GEMINI_API_KEY }}
+    allow-external-provider: 'true'
+    model: 'gemini-2.5-flash'
+    fallback-model: 'gemini-2.5-flash-lite'
+```
+
+- If the primary model returns HTTP 429, the action immediately attempts review with `fallback-model`.
+- When fallback succeeds, the PR summary comment clearly indicates: `gemini / gemini-2.5-flash-lite (fallback on 429)`.
+- If no `fallback-model` is specified, no fallback request is attempted.
 
 
 ## Static reports

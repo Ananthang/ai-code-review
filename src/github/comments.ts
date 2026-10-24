@@ -26,6 +26,7 @@ export interface SummaryData {
   outputTokens?: number;
   overview?: string;
   findingsList?: Finding[];
+  fallbackFromModel?: string;
 }
 
 const SEVERITY_ICONS: Record<Severity, string> = {
@@ -65,13 +66,16 @@ function cleanMessage(text: string, maxLen = 100): string {
 export function formatSummaryComment(data: SummaryData): string {
   const statusEmoji = data.status === 'completed' ? '✅' : data.status === 'partial' ? '⚠️' : 'ℹ️';
   const cleanModel = data.model.replace(/^models\//, '');
+  const modelDisplay = data.fallbackFromModel
+    ? `\`${data.provider}\` / \`${cleanModel}\` *(fallback on 429)*`
+    : `\`${data.provider}\` / \`${cleanModel}\``;
 
   const lines: string[] = [
     `## ${statusEmoji} AI Code Review Summary`,
     '',
     `| Status | Provider & Model | Reviewed Files | Findings |`,
     `| :--- | :--- | :--- | :--- |`,
-    `| **${data.status.toUpperCase()}${data.reasonCode ? ` (${data.reasonCode})` : ''}** | \`${data.provider}\` / \`${cleanModel}\` | **${data.reviewedFiles}** of ${data.totalChangedFiles} | **${data.publishedFindingsCount}** new (${data.dedupedCount} deduped) |`,
+    `| **${data.status.toUpperCase()}${data.reasonCode ? ` (${data.reasonCode})` : ''}** | ${modelDisplay} | **${data.reviewedFiles}** of ${data.totalChangedFiles} | **${data.publishedFindingsCount}** new (${data.dedupedCount} deduped) |`,
     '',
   ];
 
