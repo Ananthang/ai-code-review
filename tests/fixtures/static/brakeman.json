@@ -1,0 +1,11 @@
+{
+  "warnings": [
+    {
+      "warning_type": "SQL Injection",
+      "message": "Possible SQL injection",
+      "file": "app/controllers/posts_controller.rb",
+      "line": 28,
+      "confidence": "High"
+    }
+  ]
+}

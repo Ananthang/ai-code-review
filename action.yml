@@ -1,0 +1,89 @@
+name: 'AI Code Review'
+description: 'Bounded, comment-only AI feedback on pull requests using Gemini and a provider-neutral interface'
+author: 'AI Code Review Contributors'
+branding:
+  icon: 'code'
+  color: 'purple'
+
+inputs:
+  github-token:
+    description: 'GitHub token with pull-requests:write and issues:write permissions'
+    required: false
+    default: '${{ github.token }}'
+  provider:
+    description: 'AI provider name (gemini, fake for testing)'
+    required: false
+    default: 'gemini'
+  model:
+    description: 'Explicit model identifier for the selected provider (e.g. gemini-2.5-flash)'
+    required: true
+  provider-api-key:
+    description: 'API key for the external AI provider'
+    required: false
+    default: ''
+  allow-external-provider:
+    description: 'Explicit opt-in to send selected diff content to the external provider'
+    required: false
+    default: 'false'
+  max-files:
+    description: 'Maximum number of files to review'
+    required: false
+    default: '20'
+  max-file-bytes:
+    description: 'Maximum patch size in bytes per file (UTF-8)'
+    required: false
+    default: '20480'
+  max-input-bytes:
+    description: 'Maximum total serialized input bytes to provider'
+    required: false
+    default: '81920'
+  max-input-tokens:
+    description: 'Estimated input tokens ceiling guard'
+    required: false
+    default: '24000'
+  max-output-tokens:
+    description: 'Provider output token cap'
+    required: false
+    default: '4000'
+  max-requests:
+    description: 'Maximum provider requests per run (fixed ceiling: 1 in MVP)'
+    required: false
+    default: '1'
+  max-findings:
+    description: 'Maximum inline findings to publish per run'
+    required: false
+    default: '10'
+  review-language:
+    description: 'Natural language for review feedback'
+    required: false
+    default: 'English'
+  exclude-patterns:
+    description: 'Additional glob patterns to exclude from review (newline or comma-separated)'
+    required: false
+    default: ''
+  mode:
+    description: 'Review mode (only "comment" accepted)'
+    required: false
+    default: 'comment'
+  static-report-paths:
+    description: 'Paths or globs to local static tool reports (newline or comma-separated)'
+    required: false
+    default: ''
+
+outputs:
+  status:
+    description: 'Review outcome status: completed, partial, skipped, or failed'
+  reason-code:
+    description: 'Machine-readable reason code for skips, partial reviews, or failures'
+  reviewed-files:
+    description: 'Number of eligible files sent for review'
+  published-findings:
+    description: 'Number of inline comments successfully published'
+  input-tokens:
+    description: 'Estimated or actual input token count'
+  output-tokens:
+    description: 'Actual or estimated output token count'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

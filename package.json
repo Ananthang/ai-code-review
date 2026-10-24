@@ -1,0 +1,35 @@
+{
+  "name": "ai-code-review",
+  "version": "0.2.0",
+  "description": "Bounded, comment-only AI feedback on GitHub pull requests using Gemini and a provider-neutral interface.",
+  "main": "dist/index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js",
+    "build": "npm run typecheck && npm run bundle",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "github-action",
+    "code-review",
+    "gemini",
+    "ai"
+  ],
+  "author": "AI Code Review Contributors",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^3.0.1",
+    "@actions/github": "^9.1.1",
+    "@google/genai": "^2.31.0",
+    "picomatch": "^4.0.7",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/picomatch": "^4.0.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

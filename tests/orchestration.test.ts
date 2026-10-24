@@ -1,0 +1,221 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { runReview } from '../src/index.js';
+import {
+  ExistingIssueComment,
+  ExistingReviewComment,
+  GitHubClient,
+  GitHubFile,
+  PullRequestDetails,
+  ReviewCommentPayload,
+} from '../src/github/client.js';
+import { FakeProvider } from '../src/providers/fake.js';
+import { BUGGY_PATCH, CLEAN_PATCH } from './fixtures/patches.js';
+
+class MockGitHubClient implements GitHubClient {
+  public prDetails: PullRequestDetails = {
+    owner: 'testowner',
+    repo: 'testrepo',
+    pullNumber: 42,
+    baseSha: 'base123',
+    headSha: 'head123',
+    isDraft: false,
+    isFork: false,
+    action: 'opened',
+    eventName: 'pull_request',
+  };
+
+  public files: GitHubFile[] = [];
+  public reviewComments: ExistingReviewComment[] = [];
+  public issueComments: ExistingIssueComment[] = [];
+  public publishedReviewComments: ReviewCommentPayload[] = [];
+  public publishedSummaries: string[] = [];
+  public currentHeadSha = 'head123';
+
+  public getPullRequestDetails(): PullRequestDetails {
+    return this.prDetails;
+  }
+
+  public async fetchPullRequestFiles(_pullNumber: number): Promise<{ files: GitHubFile[]; isComplete: boolean }> {
+    return { files: this.files, isComplete: true };
+  }
+
+  public async getHeadSha(_pullNumber: number): Promise<string> {
+    return this.currentHeadSha;
+  }
+
+  public async fetchReviewComments(_pullNumber: number): Promise<ExistingReviewComment[]> {
+    return this.reviewComments;
+  }
+
+  public async fetchIssueComments(_pullNumber: number): Promise<ExistingIssueComment[]> {
+    return this.issueComments;
+  }
+
+  public async publishReviewComments(
+    _pullNumber: number,
+    _commitSha: string,
+    comments: ReviewCommentPayload[]
+  ): Promise<{ publishedCount: number; errors: string[] }> {
+    this.publishedReviewComments.push(...comments);
+    // Also record as existing review comments for subsequent calls
+    for (const c of comments) {
+      this.reviewComments.push({
+        id: Math.floor(Math.random() * 100000),
+        body: c.body,
+        path: c.path,
+        line: c.line,
+        user: { login: 'github-actions[bot]' },
+      });
+    }
+    return { publishedCount: comments.length, errors: [] };
+  }
+
+  public async createOrUpdateSummary(
+    _issueNumber: number,
+    summaryBody: string,
+    existingCommentId?: number
+  ): Promise<{ commentId: number }> {
+    this.publishedSummaries.push(summaryBody);
+    const id = existingCommentId || 999;
+    return { commentId: id };
+  }
+}
+
+describe('End-to-end review orchestration', () => {
+  beforeEach(() => {
+    process.env.GITHUB_TOKEN = 'ghp_mock_token_12345678901234567890';
+    process.env.AI_MODEL = 'gemini-2.5-flash';
+  });
+
+  it('skips fork pull requests safely without calling provider', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.prDetails.isFork = true;
+
+    const fakeProvider = new FakeProvider();
+    const outcome = await runReview(mockClient, fakeProvider);
+
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('fork_pr_skipped');
+    expect(mockClient.publishedReviewComments).toHaveLength(0);
+  });
+
+  it('skips draft pull requests safely', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.prDetails.isDraft = true;
+
+    const fakeProvider = new FakeProvider();
+    const outcome = await runReview(mockClient, fakeProvider);
+
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('draft_pr_skipped');
+  });
+
+  it('skips unsupported PR actions (e.g. closed)', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.prDetails.action = 'closed';
+
+    const fakeProvider = new FakeProvider();
+    const outcome = await runReview(mockClient, fakeProvider);
+
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('unsupported_pr_action');
+  });
+
+  it('reviews clean PR and publishes no spurious comments', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.files = [
+      {
+        filename: 'src/math.ts',
+        status: 'modified',
+        patch: CLEAN_PATCH,
+        changes: 3,
+        additions: 3,
+        deletions: 0,
+      },
+    ];
+
+    // Clean provider returns 0 findings
+    const fakeProvider = new FakeProvider({ findings: [] });
+    const outcome = await runReview(mockClient, fakeProvider);
+
+    expect(outcome.status).toBe('completed');
+    expect(outcome.publishedFindings).toBe(0);
+    expect(mockClient.publishedReviewComments).toHaveLength(0);
+    expect(mockClient.publishedSummaries).toHaveLength(1);
+    expect(mockClient.publishedSummaries[0]).toContain('COMPLETED');
+  });
+
+  it('detects seeded defect, publishes inline comment, and suppresses duplicates on rerun', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.files = [
+      {
+        filename: 'src/user.ts',
+        status: 'modified',
+        patch: BUGGY_PATCH,
+        changes: 3,
+        additions: 3,
+        deletions: 1,
+      },
+    ];
+
+    // Seeded bug finding on line 3 (an added line)
+    const seededFinding = {
+      path: 'src/user.ts',
+      line: 3,
+      severity: 'high' as const,
+      message: 'Unchecked dereference of optional user.profile',
+      recommendation: 'Use optional chaining user?.profile?.email',
+    };
+
+    const fakeProvider = new FakeProvider({ findings: [seededFinding] });
+
+    // First run: should publish finding
+    const outcome1 = await runReview(mockClient, fakeProvider);
+    expect(outcome1.status).toBe('completed');
+    expect(outcome1.publishedFindings).toBe(1);
+    expect(mockClient.publishedReviewComments).toHaveLength(1);
+    expect(mockClient.publishedReviewComments[0].path).toBe('src/user.ts');
+    expect(mockClient.publishedReviewComments[0].line).toBe(3);
+
+    // Second run (identical rerun): existing comments contain fingerprint -> 0 duplicates published!
+    mockClient.prDetails.action = 'synchronize';
+    const outcome2 = await runReview(mockClient, fakeProvider);
+    expect(outcome2.status).toBe('completed');
+    expect(outcome2.publishedFindings).toBe(0); // 0 new duplicates!
+    expect(mockClient.publishedReviewComments).toHaveLength(1); // Still only 1 total comment
+  });
+
+  it('safely discards findings when head SHA changes during review (stale-head guard)', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.files = [
+      {
+        filename: 'src/user.ts',
+        status: 'modified',
+        patch: BUGGY_PATCH,
+        changes: 3,
+        additions: 3,
+        deletions: 1,
+      },
+    ];
+
+    const fakeProvider = new FakeProvider({
+      findings: [
+        {
+          path: 'src/user.ts',
+          line: 3,
+          severity: 'high',
+          message: 'Bug',
+          recommendation: 'Fix',
+        },
+      ],
+    });
+
+    // Simulate head SHA change while review was calculating
+    mockClient.currentHeadSha = 'newHead456';
+
+    const outcome = await runReview(mockClient, fakeProvider);
+    expect(outcome.status).toBe('partial');
+    expect(outcome.reasonCode).toBe('stale_head_discarded');
+    expect(mockClient.publishedReviewComments).toHaveLength(0); // No comment posted to stale commit
+  });
+});

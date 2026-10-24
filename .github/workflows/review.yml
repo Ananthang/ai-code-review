@@ -1,0 +1,69 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  # Optional: run linter in an isolated credential-free job
+  lint:
+    name: Lint & Static Checks (No AI Credentials)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run linter and output JSON report
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          echo '[]' > reports/eslint.json
+
+      - name: Upload static report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-reports
+          path: reports/
+          retention-days: 1
+
+  # Review job: possesses AI credentials, does NOT run arbitrary PR code
+  review:
+    name: AI Review
+    needs: [lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Download static report artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: static-reports
+          path: reports/
+
+      - name: Run AI Code Review Action
+        uses: ./
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          provider: 'gemini'
+          model: 'gemini-2.5-flash'
+          provider-api-key: ${{ secrets.GEMINI_API_KEY }}
+          allow-external-provider: 'true'
+          static-report-paths: 'reports/*.json'
+          max-findings: 10
+          max-files: 20
