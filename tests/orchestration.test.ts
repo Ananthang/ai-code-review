@@ -30,9 +30,14 @@ class MockGitHubClient implements GitHubClient {
   public publishedReviewComments: ReviewCommentPayload[] = [];
   public publishedSummaries: string[] = [];
   public currentHeadSha = 'head123';
+  public reactions: Array<{ commentId: number; reaction: string }> = [];
 
-  public getPullRequestDetails(): PullRequestDetails {
+  public async getPullRequestDetails(): Promise<PullRequestDetails> {
     return this.prDetails;
+  }
+
+  public async addCommentReaction(commentId: number, reaction: string): Promise<void> {
+    this.reactions.push({ commentId, reaction });
   }
 
   public async fetchPullRequestFiles(_pullNumber: number): Promise<{ files: GitHubFile[]; isComplete: boolean }> {
@@ -217,5 +222,109 @@ describe('End-to-end review orchestration', () => {
     expect(outcome.status).toBe('partial');
     expect(outcome.reasonCode).toBe('stale_head_discarded');
     expect(mockClient.publishedReviewComments).toHaveLength(0); // No comment posted to stale commit
+  });
+
+  it('triggers review when user comments /review on PR', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.prDetails = {
+      ...mockClient.prDetails,
+      eventName: 'issue_comment',
+      action: 'created',
+      commentBody: '/review',
+      commentId: 101,
+    };
+
+    mockClient.files = [
+      {
+        filename: 'src/user.ts',
+        status: 'modified',
+        patch: BUGGY_PATCH,
+        changes: 3,
+        additions: 3,
+        deletions: 1,
+      },
+    ];
+
+    const fakeProvider = new FakeProvider({
+      findings: [
+        {
+          path: 'src/user.ts',
+          line: 3,
+          severity: 'high',
+          message: 'Bug found',
+          recommendation: 'Fix bug',
+        },
+      ],
+    });
+
+    const outcome = await runReview(mockClient, fakeProvider);
+    expect(outcome.status).toBe('completed');
+    expect(outcome.publishedFindings).toBe(1);
+    expect(mockClient.reactions.map((r) => r.reaction)).toEqual(['eyes', 'rocket']);
+  });
+
+  it('filters to specific file when user comments /review <path>', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.prDetails = {
+      ...mockClient.prDetails,
+      eventName: 'issue_comment',
+      action: 'created',
+      commentBody: '/review src/user.ts',
+      commentId: 102,
+      targetFile: 'src/user.ts',
+    };
+
+    mockClient.files = [
+      {
+        filename: 'src/user.ts',
+        status: 'modified',
+        patch: BUGGY_PATCH,
+        changes: 3,
+        additions: 3,
+        deletions: 1,
+      },
+      {
+        filename: 'src/math.ts',
+        status: 'modified',
+        patch: CLEAN_PATCH,
+        changes: 2,
+        additions: 2,
+        deletions: 0,
+      },
+    ];
+
+    const fakeProvider = new FakeProvider({
+      findings: [
+        {
+          path: 'src/user.ts',
+          line: 3,
+          severity: 'high',
+          message: 'Bug found',
+          recommendation: 'Fix bug',
+        },
+      ],
+    });
+
+    const outcome = await runReview(mockClient, fakeProvider);
+    expect(outcome.status).toBe('completed');
+    expect(outcome.reviewedFiles).toBe(1); // Only reviewed src/user.ts!
+    expect(outcome.publishedFindings).toBe(1);
+  });
+
+  it('skips non-trigger comments safely (e.g. "looks good to me")', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.prDetails = {
+      ...mockClient.prDetails,
+      eventName: 'issue_comment',
+      action: 'created',
+      commentBody: 'Looks good to me! 👍',
+      commentId: 103,
+    };
+
+    const fakeProvider = new FakeProvider();
+    const outcome = await runReview(mockClient, fakeProvider);
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('comment_not_a_trigger');
+    expect(mockClient.publishedReviewComments).toHaveLength(0);
   });
 });

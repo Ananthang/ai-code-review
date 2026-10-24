@@ -10,6 +10,9 @@ export interface PullRequestDetails {
   isFork: boolean;
   action: string;
   eventName: string;
+  commentBody?: string;
+  commentId?: number;
+  targetFile?: string;
 }
 
 export interface GitHubFile {
@@ -43,7 +46,7 @@ export interface ReviewCommentPayload {
 }
 
 export interface GitHubClient {
-  getPullRequestDetails(): PullRequestDetails;
+  getPullRequestDetails(): Promise<PullRequestDetails>;
   fetchPullRequestFiles(pullNumber: number): Promise<{ files: GitHubFile[]; isComplete: boolean }>;
   getHeadSha(pullNumber: number): Promise<string>;
   fetchReviewComments(pullNumber: number): Promise<ExistingReviewComment[]>;
@@ -58,6 +61,10 @@ export interface GitHubClient {
     summaryBody: string,
     existingCommentId?: number
   ): Promise<{ commentId: number }>;
+  addCommentReaction?(
+    commentId: number,
+    reaction: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes'
+  ): Promise<void>;
 }
 
 export class OctokitGitHubClient implements GitHubClient {
@@ -71,12 +78,54 @@ export class OctokitGitHubClient implements GitHubClient {
     this.repo = repo || github.context.repo.repo;
   }
 
-  public getPullRequestDetails(): PullRequestDetails {
+  public async getPullRequestDetails(): Promise<PullRequestDetails> {
     const payload = github.context.payload;
-    const pr = payload.pull_request;
     const eventName = github.context.eventName;
     const action = payload.action || '';
 
+    // Support issue_comment event on pull requests (e.g. comment triggers like /review)
+    if (eventName === 'issue_comment') {
+      if (!payload.issue?.pull_request) {
+        throw new Error("Event 'issue_comment' is not associated with a pull request");
+      }
+      const pullNumber = payload.issue.number;
+      const response = await this.octokit.rest.pulls.get({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: pullNumber,
+      });
+
+      const pr = response.data;
+      const headRepoFullName = pr.head?.repo?.full_name;
+      const baseRepoFullName = pr.base?.repo?.full_name;
+      const isFork = Boolean(headRepoFullName && baseRepoFullName && headRepoFullName !== baseRepoFullName);
+      const isDraft = Boolean(pr.draft);
+      const commentBody = payload.comment?.body || '';
+
+      // Parse optional target file filter, e.g. "/review src/user.ts"
+      let targetFile: string | undefined;
+      const parts = commentBody.trim().split(/\s+/);
+      if (parts.length > 1 && !parts[1].startsWith('-')) {
+        targetFile = parts[1];
+      }
+
+      return {
+        owner: this.owner,
+        repo: this.repo,
+        pullNumber,
+        baseSha: pr.base.sha,
+        headSha: pr.head.sha,
+        isDraft,
+        isFork,
+        action,
+        eventName,
+        commentBody,
+        commentId: payload.comment?.id,
+        targetFile,
+      };
+    }
+
+    const pr = payload.pull_request;
     if (!pr) {
       throw new Error(`Event '${eventName}' does not contain a pull_request payload`);
     }
@@ -97,6 +146,22 @@ export class OctokitGitHubClient implements GitHubClient {
       action,
       eventName,
     };
+  }
+
+  public async addCommentReaction(
+    commentId: number,
+    reaction: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes'
+  ): Promise<void> {
+    try {
+      await this.octokit.rest.reactions.createForIssueComment({
+        owner: this.owner,
+        repo: this.repo,
+        comment_id: commentId,
+        content: reaction,
+      });
+    } catch {
+      // Ignored if reaction fails or token lacks reaction permissions
+    }
   }
 
   public async fetchPullRequestFiles(pullNumber: number): Promise<{ files: GitHubFile[]; isComplete: boolean }> {

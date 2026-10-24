@@ -33,17 +33,35 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     }
 
     const client = customClient ?? new OctokitGitHubClient(config.githubToken);
-    const prDetails = client.getPullRequestDetails();
+    const prDetails = await client.getPullRequestDetails();
 
     SafeLogger.info(`Starting AI code review for PR #${prDetails.pullNumber} on ${prDetails.owner}/${prDetails.repo}`);
 
     // 2. Validate event and PR attributes (FR-01)
-    const allowedActions = ['opened', 'synchronize', 'reopened'];
-    if (!allowedActions.includes(prDetails.action)) {
-      status = 'skipped';
-      reasonCode = 'unsupported_pr_action';
-      SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: action '${prDetails.action}' is not reviewed`);
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+    if (prDetails.eventName === 'issue_comment') {
+      const comment = (prDetails.commentBody || '').trim().toLowerCase();
+      const isReviewTrigger =
+        comment.startsWith('/review') || comment.startsWith('/ai-review') || comment.startsWith('/recheck');
+
+      if (!isReviewTrigger) {
+        status = 'skipped';
+        reasonCode = 'comment_not_a_trigger';
+        SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: comment is not a review trigger command`);
+        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      }
+
+      // Acknowledge review trigger with reaction
+      if (prDetails.commentId && client.addCommentReaction) {
+        await client.addCommentReaction(prDetails.commentId, 'eyes');
+      }
+    } else {
+      const allowedActions = ['opened', 'synchronize', 'reopened'];
+      if (!allowedActions.includes(prDetails.action)) {
+        status = 'skipped';
+        reasonCode = 'unsupported_pr_action';
+        SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: action '${prDetails.action}' is not reviewed`);
+        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      }
     }
 
     if (prDetails.isFork) {
@@ -104,6 +122,14 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
     for (const ghFile of ghFiles) {
       const filePath = ghFile.filename;
+
+      if (prDetails.targetFile) {
+        const target = prDetails.targetFile.toLowerCase();
+        const normFile = filePath.toLowerCase();
+        if (!normFile.includes(target) && !target.includes(normFile)) {
+          continue;
+        }
+      }
 
       if (ghFile.status === 'removed') {
         recordExclusion('removed_file');
@@ -288,6 +314,10 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       status,
       reasonCode,
     });
+
+    if (prDetails.commentId && client.addCommentReaction) {
+      await client.addCommentReaction(prDetails.commentId, 'rocket');
+    }
 
     return setActionOutputs({
       status,

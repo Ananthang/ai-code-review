@@ -68564,11 +68564,47 @@ var OctokitGitHubClient = class {
     this.owner = owner || context2.repo.owner;
     this.repo = repo || context2.repo.repo;
   }
-  getPullRequestDetails() {
+  async getPullRequestDetails() {
     const payload = context2.payload;
-    const pr = payload.pull_request;
     const eventName = context2.eventName;
     const action = payload.action || "";
+    if (eventName === "issue_comment") {
+      if (!payload.issue?.pull_request) {
+        throw new Error("Event 'issue_comment' is not associated with a pull request");
+      }
+      const pullNumber = payload.issue.number;
+      const response = await this.octokit.rest.pulls.get({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: pullNumber
+      });
+      const pr2 = response.data;
+      const headRepoFullName2 = pr2.head?.repo?.full_name;
+      const baseRepoFullName2 = pr2.base?.repo?.full_name;
+      const isFork2 = Boolean(headRepoFullName2 && baseRepoFullName2 && headRepoFullName2 !== baseRepoFullName2);
+      const isDraft2 = Boolean(pr2.draft);
+      const commentBody = payload.comment?.body || "";
+      let targetFile;
+      const parts = commentBody.trim().split(/\s+/);
+      if (parts.length > 1 && !parts[1].startsWith("-")) {
+        targetFile = parts[1];
+      }
+      return {
+        owner: this.owner,
+        repo: this.repo,
+        pullNumber,
+        baseSha: pr2.base.sha,
+        headSha: pr2.head.sha,
+        isDraft: isDraft2,
+        isFork: isFork2,
+        action,
+        eventName,
+        commentBody,
+        commentId: payload.comment?.id,
+        targetFile
+      };
+    }
+    const pr = payload.pull_request;
     if (!pr) {
       throw new Error(`Event '${eventName}' does not contain a pull_request payload`);
     }
@@ -68587,6 +68623,17 @@ var OctokitGitHubClient = class {
       action,
       eventName
     };
+  }
+  async addCommentReaction(commentId, reaction) {
+    try {
+      await this.octokit.rest.reactions.createForIssueComment({
+        owner: this.owner,
+        repo: this.repo,
+        comment_id: commentId,
+        content: reaction
+      });
+    } catch {
+    }
   }
   async fetchPullRequestFiles(pullNumber) {
     try {
@@ -93651,14 +93698,28 @@ async function runReview(customClient, customProvider) {
       SafeLogger.registerSecret(config2.githubToken);
     }
     const client = customClient ?? new OctokitGitHubClient(config2.githubToken);
-    const prDetails = client.getPullRequestDetails();
+    const prDetails = await client.getPullRequestDetails();
     SafeLogger.info(`Starting AI code review for PR #${prDetails.pullNumber} on ${prDetails.owner}/${prDetails.repo}`);
-    const allowedActions = ["opened", "synchronize", "reopened"];
-    if (!allowedActions.includes(prDetails.action)) {
-      status = "skipped";
-      reasonCode = "unsupported_pr_action";
-      SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: action '${prDetails.action}' is not reviewed`);
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+    if (prDetails.eventName === "issue_comment") {
+      const comment = (prDetails.commentBody || "").trim().toLowerCase();
+      const isReviewTrigger = comment.startsWith("/review") || comment.startsWith("/ai-review") || comment.startsWith("/recheck");
+      if (!isReviewTrigger) {
+        status = "skipped";
+        reasonCode = "comment_not_a_trigger";
+        SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: comment is not a review trigger command`);
+        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      }
+      if (prDetails.commentId && client.addCommentReaction) {
+        await client.addCommentReaction(prDetails.commentId, "eyes");
+      }
+    } else {
+      const allowedActions = ["opened", "synchronize", "reopened"];
+      if (!allowedActions.includes(prDetails.action)) {
+        status = "skipped";
+        reasonCode = "unsupported_pr_action";
+        SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: action '${prDetails.action}' is not reviewed`);
+        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      }
     }
     if (prDetails.isFork) {
       status = "skipped";
@@ -93708,6 +93769,13 @@ async function runReview(customClient, customProvider) {
     };
     for (const ghFile of ghFiles) {
       const filePath = ghFile.filename;
+      if (prDetails.targetFile) {
+        const target = prDetails.targetFile.toLowerCase();
+        const normFile = filePath.toLowerCase();
+        if (!normFile.includes(target) && !target.includes(normFile)) {
+          continue;
+        }
+      }
       if (ghFile.status === "removed") {
         recordExclusion("removed_file");
         continue;
@@ -93865,6 +93933,9 @@ async function runReview(customClient, customProvider) {
       status,
       reasonCode
     });
+    if (prDetails.commentId && client.addCommentReaction) {
+      await client.addCommentReaction(prDetails.commentId, "rocket");
+    }
     return setActionOutputs({
       status,
       reasonCode,
