@@ -242,9 +242,9 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
     await reactToReviewStart(client, prDetails);
 
-    // 6. Provider execution with 60-second timeout (FR-05)
+    // 6. Provider execution with 120-second timeout (gives reasoning models like gemini-3.8-flash sufficient time)
     const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), 60000); // 60s provider timeout
+    const timeout = setTimeout(() => abortController.abort(), 120000); // 120s provider timeout
 
     let rawFindings: Finding[] = [];
     let aiSummary: string | undefined;

@@ -47749,7 +47749,7 @@ async function runReview(customClient, customProvider) {
     }
     await reactToReviewStart(client, prDetails);
     const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), 6e4);
+    const timeout = setTimeout(() => abortController.abort(), 12e4);
     let rawFindings = [];
     let aiSummary;
     try {
