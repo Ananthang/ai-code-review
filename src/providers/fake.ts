@@ -1,6 +1,7 @@
 import { AIProvider, Finding, ProviderResult, ReviewInput } from '../types.js';
 
 export interface FakeProviderOptions {
+  summary?: string;
   findings?: Finding[];
   delayMs?: number;
   shouldFail?: boolean;
@@ -36,6 +37,7 @@ export class FakeProvider implements AIProvider {
 
     const findings = this.options.findings ?? [];
     return {
+      summary: this.options.summary,
       findings: findings.slice(0, input.maxFindings),
       usage: {
         inputTokens: 150,

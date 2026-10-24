@@ -93091,8 +93091,9 @@ IMPORTANT RULES:
 3. Ignore code formatting, stylistic choices, missing comments, or minor subjective preferences.
 4. Report findings ONLY on lines that are newly added in this diff (lines prefixed with '+'). The 'line' number in your response MUST be the positive line number on the right-hand (new) side of the diff.
 5. Provide a concrete, actionable recommendation for every finding.
-6. If the code is clean or has no severe defects, return an empty findings list.
-7. Return ONLY valid JSON matching the requested schema. No conversational filler or markdown code fences outside JSON.`;
+6. Provide a concise 1-2 sentence high-level overview in "summary" describing the purpose and changes in this PR.
+7. If the code is clean or has no severe defects, return an empty findings list.
+8. Return ONLY valid JSON matching the requested schema. No conversational filler or markdown code fences outside JSON.`;
 function buildReviewPrompt(input2) {
   const fileSections = input2.files.map((file2) => {
     return [
@@ -93108,6 +93109,7 @@ function buildReviewPrompt(input2) {
     "",
     `Output JSON format:`,
     `{`,
+    `  "summary": "1-2 sentence concise high-level description of what this PR introduces or modifies",`,
     `  "findings": [`,
     `    {`,
     `      "path": "path/to/file.ext",`,
@@ -93134,6 +93136,7 @@ var FindingSchema = external_exports.object({
   recommendation: external_exports.string().min(1).max(2e3)
 });
 var ProviderResponseSchema = external_exports.object({
+  summary: external_exports.string().optional(),
   findings: external_exports.array(FindingSchema)
 });
 function sanitizeFindingContent(text) {
@@ -93240,6 +93243,7 @@ var GeminiProvider = class {
       const inputTokens = response.usageMetadata?.promptTokenCount;
       const outputTokens = response.usageMetadata?.candidatesTokenCount;
       return {
+        summary: validated.data.summary,
         findings: validated.data.findings,
         usage: {
           inputTokens,
@@ -93305,6 +93309,7 @@ var FakeProvider = class {
     }
     const findings = this.options.findings ?? [];
     return {
+      summary: this.options.summary,
       findings: findings.slice(0, input2.maxFindings),
       usage: {
         inputTokens: 150,
@@ -93361,35 +93366,76 @@ function formatFindingComment(finding, fingerprint) {
     `<!-- ai-code-review-fingerprint:v1:${fingerprint} -->`
   ].join("\n");
 }
+function cleanMessage(text, maxLen = 100) {
+  const singleLine = text.replace(/[\r\n]+/g, " ").trim();
+  if (singleLine.length <= maxLen) return singleLine;
+  return singleLine.slice(0, maxLen - 3) + "...";
+}
 function formatSummaryComment(data) {
   const statusEmoji = data.status === "completed" ? "\u2705" : data.status === "partial" ? "\u26A0\uFE0F" : "\u2139\uFE0F";
+  const cleanModel = data.model.replace(/^models\//, "");
   const lines = [
     `## ${statusEmoji} AI Code Review Summary`,
     "",
-    `**Status:** ${data.status.toUpperCase()}${data.reasonCode ? ` (${data.reasonCode})` : ""}`,
-    `**Provider / Model:** \`${data.provider}\` / \`${data.model}\``,
-    "",
-    "### Coverage & Scope",
-    `- **Reviewed Files:** ${data.reviewedFiles} of ${data.totalChangedFiles} total`,
-    `- **Skipped / Excluded Files:** ${data.skippedFilesCount}`
+    `| Status | Provider & Model | Reviewed Files | Findings |`,
+    `| :--- | :--- | :--- | :--- |`,
+    `| **${data.status.toUpperCase()}${data.reasonCode ? ` (${data.reasonCode})` : ""}** | \`${data.provider}\` / \`${cleanModel}\` | **${data.reviewedFiles}** of ${data.totalChangedFiles} | **${data.publishedFindingsCount}** new (${data.dedupedCount} deduped) |`,
+    ""
   ];
+  lines.push("### \u{1F4DD} Overview of Changes");
+  if (data.overview && data.overview.trim()) {
+    lines.push(data.overview.trim());
+  } else if (data.reviewedFiles === 0) {
+    lines.push("No eligible code files were found to review after applying exclusions.");
+  } else {
+    lines.push(
+      `Automated AI review evaluated **${data.reviewedFiles} file(s)** against best practices, security guidelines, and potential defects.`
+    );
+  }
+  lines.push("");
+  if (data.findingsList && data.findingsList.length > 0) {
+    lines.push("### \u{1F50D} Key Findings & Recommendations");
+    lines.push("");
+    lines.push("| Severity | Location | Issue | Recommendation |");
+    lines.push("| :--- | :--- | :--- | :--- |");
+    for (const f3 of data.findingsList) {
+      const badge = SEVERITY_ICONS[f3.severity] || f3.severity.toUpperCase();
+      const loc = `\`${f3.path}:${f3.line}\``;
+      const issue3 = cleanMessage(f3.message, 100);
+      const rec = cleanMessage(f3.recommendation, 100);
+      lines.push(`| ${badge} | ${loc} | ${issue3} | ${rec} |`);
+    }
+    lines.push("");
+  } else if (data.status === "completed" && data.totalFindingsCount === 0) {
+    lines.push("### \u{1F7E2} Review Verdict: Clean");
+    lines.push("No defects, security issues, or regressions were identified in the reviewed changes.");
+    lines.push("");
+  }
+  lines.push("<details>");
+  lines.push("<summary><b>\u{1F4CA} Review & Exclusions Breakdown</b></summary>");
+  lines.push("");
+  lines.push(`- **Reviewed Files:** ${data.reviewedFiles} of ${data.totalChangedFiles} total`);
+  lines.push(`- **Skipped / Excluded Files:** ${data.skippedFilesCount}`);
   const reasonEntries = Object.entries(data.excludedReasons);
   if (reasonEntries.length > 0) {
     for (const [reason, count] of reasonEntries) {
-      lines.push(`  - ${reason}: ${count}`);
+      lines.push(`  - \`${reason}\`: ${count}`);
     }
   }
-  lines.push("");
-  lines.push("### Findings");
-  lines.push(`- **Total Detected:** ${data.totalFindingsCount}`);
-  lines.push(`- **Previously Published (Deduped):** ${data.dedupedCount}`);
-  lines.push(`- **Newly Published:** ${data.publishedFindingsCount}`);
+  lines.push(`- **Total Detected Issues:** ${data.totalFindingsCount}`);
+  lines.push(`- **Previously Commented (Deduped):** ${data.dedupedCount}`);
+  lines.push(`- **Newly Published Comments:** ${data.publishedFindingsCount}`);
   if (data.inputTokens !== void 0 || data.outputTokens !== void 0) {
     lines.push("");
-    lines.push("### Usage");
-    if (data.inputTokens !== void 0) lines.push(`- **Input Tokens (est/actual):** ${data.inputTokens}`);
-    if (data.outputTokens !== void 0) lines.push(`- **Output Tokens:** ${data.outputTokens}`);
+    lines.push(`- **Estimated Input Tokens:** ${data.inputTokens ?? 0}`);
+    lines.push(`- **Output Tokens:** ${data.outputTokens ?? 0}`);
   }
+  lines.push("");
+  lines.push("</details>");
+  lines.push("");
+  lines.push("> [!TIP]");
+  lines.push("> - Comment `/review` to re-trigger a full review on the latest commit.");
+  lines.push("> - Comment `/review <file>` (e.g. `/review path/to/file`) to re-check a specific file.");
   lines.push("");
   lines.push("> [!NOTE]");
   lines.push("> This advisory review was generated by a bounded AI action to assist maintainers.");
@@ -93454,7 +93500,8 @@ async function publishFindingsAndSummary(client, repoFullName, pullNumber, expec
     totalFindingsCount: findings.length,
     novelFindingsCount: novelFindings.length,
     publishedFindingsCount: publishResult.publishedCount,
-    dedupedCount
+    dedupedCount,
+    findingsList: cappedFindings
   };
   const summaryMarkdown = formatSummaryComment(fullSummaryData);
   await client.createOrUpdateSummary(pullNumber, summaryMarkdown, existingSummary?.id);
@@ -93845,6 +93892,7 @@ async function runReview(customClient, customProvider) {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), 6e4);
     let rawFindings = [];
+    let aiSummary;
     try {
       const reviewInput = {
         files: budget.includedFiles.map((f3) => ({ path: f3.path, patch: f3.patch })),
@@ -93853,6 +93901,7 @@ async function runReview(customClient, customProvider) {
       };
       const result = await provider.review(reviewInput, abortController.signal);
       rawFindings = result.findings;
+      aiSummary = result.summary;
       if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;
       if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
     } catch (providerErr) {
@@ -93902,7 +93951,8 @@ async function runReview(customClient, customProvider) {
         skippedFilesCount: ghFiles.length - reviewedFilesCount,
         excludedReasons,
         inputTokens,
-        outputTokens
+        outputTokens,
+        overview: aiSummary
       },
       config2.maxFindings
     );

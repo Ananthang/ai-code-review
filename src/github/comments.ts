@@ -22,6 +22,8 @@ export interface SummaryData {
   dedupedCount: number;
   inputTokens?: number;
   outputTokens?: number;
+  overview?: string;
+  findingsList?: Finding[];
 }
 
 const SEVERITY_ICONS: Record<Severity, string> = {
@@ -52,41 +54,94 @@ export function formatFindingComment(finding: Finding, fingerprint: string): str
   ].join('\n');
 }
 
+function cleanMessage(text: string, maxLen = 100): string {
+  const singleLine = text.replace(/[\r\n]+/g, ' ').trim();
+  if (singleLine.length <= maxLen) return singleLine;
+  return singleLine.slice(0, maxLen - 3) + '...';
+}
+
 export function formatSummaryComment(data: SummaryData): string {
   const statusEmoji = data.status === 'completed' ? '✅' : data.status === 'partial' ? '⚠️' : 'ℹ️';
+  const cleanModel = data.model.replace(/^models\//, '');
 
   const lines: string[] = [
     `## ${statusEmoji} AI Code Review Summary`,
     '',
-    `**Status:** ${data.status.toUpperCase()}${data.reasonCode ? ` (${data.reasonCode})` : ''}`,
-    `**Provider / Model:** \`${data.provider}\` / \`${data.model}\``,
+    `| Status | Provider & Model | Reviewed Files | Findings |`,
+    `| :--- | :--- | :--- | :--- |`,
+    `| **${data.status.toUpperCase()}${data.reasonCode ? ` (${data.reasonCode})` : ''}** | \`${data.provider}\` / \`${cleanModel}\` | **${data.reviewedFiles}** of ${data.totalChangedFiles} | **${data.publishedFindingsCount}** new (${data.dedupedCount} deduped) |`,
     '',
-    '### Coverage & Scope',
-    `- **Reviewed Files:** ${data.reviewedFiles} of ${data.totalChangedFiles} total`,
-    `- **Skipped / Excluded Files:** ${data.skippedFilesCount}`,
   ];
+
+  // 1. Overview description
+  lines.push('### 📝 Overview of Changes');
+  if (data.overview && data.overview.trim()) {
+    lines.push(data.overview.trim());
+  } else if (data.reviewedFiles === 0) {
+    lines.push('No eligible code files were found to review after applying exclusions.');
+  } else {
+    lines.push(
+      `Automated AI review evaluated **${data.reviewedFiles} file(s)** against best practices, security guidelines, and potential defects.`
+    );
+  }
+  lines.push('');
+
+  // 2. Findings table / Verdict
+  if (data.findingsList && data.findingsList.length > 0) {
+    lines.push('### 🔍 Key Findings & Recommendations');
+    lines.push('');
+    lines.push('| Severity | Location | Issue | Recommendation |');
+    lines.push('| :--- | :--- | :--- | :--- |');
+
+    for (const f of data.findingsList) {
+      const badge = SEVERITY_ICONS[f.severity] || f.severity.toUpperCase();
+      const loc = `\`${f.path}:${f.line}\``;
+      const issue = cleanMessage(f.message, 100);
+      const rec = cleanMessage(f.recommendation, 100);
+      lines.push(`| ${badge} | ${loc} | ${issue} | ${rec} |`);
+    }
+    lines.push('');
+  } else if (data.status === 'completed' && data.totalFindingsCount === 0) {
+    lines.push('### 🟢 Review Verdict: Clean');
+    lines.push('No defects, security issues, or regressions were identified in the reviewed changes.');
+    lines.push('');
+  }
+
+  // 3. Collapsible Coverage & Telemetry Details
+  lines.push('<details>');
+  lines.push('<summary><b>📊 Review & Exclusions Breakdown</b></summary>');
+  lines.push('');
+  lines.push(`- **Reviewed Files:** ${data.reviewedFiles} of ${data.totalChangedFiles} total`);
+  lines.push(`- **Skipped / Excluded Files:** ${data.skippedFilesCount}`);
 
   const reasonEntries = Object.entries(data.excludedReasons);
   if (reasonEntries.length > 0) {
     for (const [reason, count] of reasonEntries) {
-      lines.push(`  - ${reason}: ${count}`);
+      lines.push(`  - \`${reason}\`: ${count}`);
     }
   }
 
-  lines.push('');
-  lines.push('### Findings');
-  lines.push(`- **Total Detected:** ${data.totalFindingsCount}`);
-  lines.push(`- **Previously Published (Deduped):** ${data.dedupedCount}`);
-  lines.push(`- **Newly Published:** ${data.publishedFindingsCount}`);
+  lines.push(`- **Total Detected Issues:** ${data.totalFindingsCount}`);
+  lines.push(`- **Previously Commented (Deduped):** ${data.dedupedCount}`);
+  lines.push(`- **Newly Published Comments:** ${data.publishedFindingsCount}`);
 
   if (data.inputTokens !== undefined || data.outputTokens !== undefined) {
     lines.push('');
-    lines.push('### Usage');
-    if (data.inputTokens !== undefined) lines.push(`- **Input Tokens (est/actual):** ${data.inputTokens}`);
-    if (data.outputTokens !== undefined) lines.push(`- **Output Tokens:** ${data.outputTokens}`);
+    lines.push(`- **Estimated Input Tokens:** ${data.inputTokens ?? 0}`);
+    lines.push(`- **Output Tokens:** ${data.outputTokens ?? 0}`);
   }
 
   lines.push('');
+  lines.push('</details>');
+  lines.push('');
+
+  // 4. Interactive Command Tips
+  lines.push('> [!TIP]');
+  lines.push('> - Comment `/review` to re-trigger a full review on the latest commit.');
+  lines.push('> - Comment `/review <file>` (e.g. `/review path/to/file`) to re-check a specific file.');
+  lines.push('');
+
+  // 5. Mandatory Disclaimer
   lines.push('> [!NOTE]');
   lines.push('> This advisory review was generated by a bounded AI action to assist maintainers.');
   lines.push('> It does not certify security, guarantee defect-free code, or replace human review.');
@@ -184,6 +239,7 @@ export async function publishFindingsAndSummary(
     novelFindingsCount: novelFindings.length,
     publishedFindingsCount: publishResult.publishedCount,
     dedupedCount,
+    findingsList: cappedFindings,
   };
 
   const summaryMarkdown = formatSummaryComment(fullSummaryData);

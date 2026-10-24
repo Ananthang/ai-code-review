@@ -10,6 +10,7 @@ export const FindingSchema = z.object({
 });
 
 export const ProviderResponseSchema = z.object({
+  summary: z.string().optional(),
   findings: z.array(FindingSchema),
 });
 

@@ -82,6 +82,7 @@ export class GeminiProvider implements AIProvider {
       const outputTokens = response.usageMetadata?.candidatesTokenCount;
 
       return {
+        summary: validated.data.summary,
         findings: validated.data.findings as Finding[],
         usage: {
           inputTokens,

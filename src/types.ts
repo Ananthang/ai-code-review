@@ -15,6 +15,7 @@ export interface ReviewInput {
 }
 
 export interface ProviderResult {
+  summary?: string;
   findings: Finding[];
   usage?: {
     inputTokens?: number;

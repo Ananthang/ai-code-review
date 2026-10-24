@@ -216,6 +216,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     const timeout = setTimeout(() => abortController.abort(), 60000); // 60s provider timeout
 
     let rawFindings: Finding[] = [];
+    let aiSummary: string | undefined;
     try {
       const reviewInput = {
         files: budget.includedFiles.map((f) => ({ path: f.path, patch: f.patch })),
@@ -225,6 +226,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
       const result = await provider.review(reviewInput, abortController.signal);
       rawFindings = result.findings;
+      aiSummary = result.summary;
       if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;
       if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
     } catch (providerErr: unknown) {
@@ -281,6 +283,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         excludedReasons,
         inputTokens,
         outputTokens,
+        overview: aiSummary,
       },
       config.maxFindings
     );
