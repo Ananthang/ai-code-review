@@ -47748,6 +47748,7 @@ async function runReview(customClient, customProvider) {
       filePatchMap.set(file2.path, file2);
     }
     await reactToReviewStart(client, prDetails);
+    SafeLogger.info(`Sending ${reviewedFilesCount} file(s) to ${effectiveProvider} (${config2.model || "default"})...`);
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), 12e4);
     let rawFindings = [];
@@ -47759,6 +47760,7 @@ async function runReview(customClient, customProvider) {
         language: config2.reviewLanguage
       };
       const result = await provider.review(reviewInput, abortController.signal);
+      SafeLogger.info("AI review response received from provider. Validating findings...");
       rawFindings = result.findings;
       aiSummary = result.summary;
       if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;

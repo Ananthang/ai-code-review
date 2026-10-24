@@ -242,6 +242,8 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
     await reactToReviewStart(client, prDetails);
 
+    SafeLogger.info(`Sending ${reviewedFilesCount} file(s) to ${effectiveProvider} (${config.model || 'default'})...`);
+
     // 6. Provider execution with 120-second timeout (gives reasoning models like gemini-3.8-flash sufficient time)
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), 120000); // 120s provider timeout
@@ -256,6 +258,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       };
 
       const result = await provider.review(reviewInput, abortController.signal);
+      SafeLogger.info('AI review response received from provider. Validating findings...');
       rawFindings = result.findings;
       aiSummary = result.summary;
       if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;
