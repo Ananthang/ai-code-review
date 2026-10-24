@@ -56,7 +56,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           provider: 'gemini'
-          model: 'gemini-2.5-flash'
+          model: 'gemini-3.8-flash'
           provider-api-key: ${{ secrets.GEMINI_API_KEY }}
           allow-external-provider: 'true'
           max-findings: 10
