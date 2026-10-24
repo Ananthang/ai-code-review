@@ -72,6 +72,8 @@ Only included added lines can receive findings. Fork/draft PRs are skipped. Prom
 
 The included workflow also handles `/review` and `/review exact/path.ts` comments. The actor must have repository write/maintain/admin permission; denied or unverifiable permission skips review. This feature requires the `issue_comment` workflow trigger. Dedupe recognizes standard `github-actions[bot]` comments; custom PAT/app identities are not supported for maintained-comment ownership.
 
+When an eligible review starts, the action adds 👀 to the triggering `/review` comment. On the first automatic review (no existing bot-owned review summary), it adds 👀 to the PR description instead. Skipped reviews do not receive a start reaction, and reaction permission failures do not stop the review. The reaction records that review started; it remains if the provider later fails. The existing 🚀 comment reaction is retained after the publication flow completes.
+
 Outputs include `status`, `reason-code`, `reviewed-files`, `published-findings`, and token counts where available. Skips/failures may only appear in action outputs and logs; always inspect status before interpreting an old PR summary.
 
 ## Static reports

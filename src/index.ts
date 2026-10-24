@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { reactToReviewStart } from './github/reactions.js';
 import { hasPromptInjection } from './security/ai-guard.js';
 import { parseConfig } from './config.js';
 import { GitHubClient, OctokitGitHubClient } from './github/client.js';
@@ -55,10 +56,6 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         return setActionOutputs({ status: 'skipped', reasonCode: 'comment_trigger_not_authorized', reviewedFiles: 0, publishedFindings: 0 });
       }
 
-      // Acknowledge review trigger with reaction
-      if (prDetails.commentId && client.addCommentReaction) {
-        await client.addCommentReaction(prDetails.commentId, 'eyes');
-      }
     } else {
       if (prDetails.eventName !== 'pull_request') {
         return setActionOutputs({ status: 'skipped', reasonCode: 'unsupported_event', reviewedFiles: 0, publishedFindings: 0 });
@@ -212,6 +209,8 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     for (const file of budget.includedFiles) {
       filePatchMap.set(file.path, file);
     }
+
+    await reactToReviewStart(client, prDetails);
 
     // 6. Provider execution with 60-second timeout (FR-05)
     const abortController = new AbortController();

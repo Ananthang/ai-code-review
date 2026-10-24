@@ -395,3 +395,22 @@ describe('AI guard orchestration', () => {
     expect(client.publishedSummaries).toHaveLength(0);
   });
 });
+
+describe('Reaction timing', () => {
+  beforeEach(() => { process.env.GITHUB_TOKEN = 'test'; process.env.AI_MODEL = 'test'; });
+  it('does not acknowledge a skipped fork comment as a started review', async () => {
+    const client = new MockGitHubClient();
+    Object.assign(client.prDetails, { eventName: 'issue_comment', action: 'created', commentBody: '/review', commentId: 1, mayTriggerReview: true, isFork: true });
+    await runReview(client, new FakeProvider());
+    expect(client.reactions).toHaveLength(0);
+  });
+  it('adds the comment reaction before invoking the provider', async () => {
+    const client = new MockGitHubClient();
+    Object.assign(client.prDetails, { eventName: 'issue_comment', action: 'created', commentBody: '/review', commentId: 1, mayTriggerReview: true });
+    client.files = [{ filename: 'a.ts', status: 'modified', patch: BUGGY_PATCH, additions: 3, deletions: 1, changes: 4 }];
+    await runReview(client, { name: 'fake', review: async () => {
+      expect(client.reactions).toEqual([{ commentId: 1, reaction: 'eyes' }]);
+      return { findings: [] };
+    } });
+  });
+});

@@ -22197,6 +22197,47 @@ function info(message) {
   process.stdout.write(message + os4.EOL);
 }
 
+// src/review/dedupe.ts
+var import_crypto = __toESM(require("crypto"));
+var FINGERPRINT_MARKER_REGEX = /<!--\s*ai-code-review-fingerprint:v1:([a-f0-9]{32,64})\s*-->/;
+var SUMMARY_MARKER = "<!-- ai-code-review-summary:v1 -->";
+function normalizeText(text) {
+  return text.toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
+}
+function computeFindingFingerprint(repoFullName, pullNumber, finding) {
+  const normalizedExplanation = normalizeText(finding.message);
+  const normalizedRecommendation = normalizeText(finding.recommendation);
+  const input2 = `${repoFullName}|${pullNumber}|${finding.path}|${finding.line}|${finding.severity}|${normalizedExplanation}|${normalizedRecommendation}`;
+  return import_crypto.default.createHash("sha256").update(input2).digest("hex");
+}
+function extractFingerprintFromComment(body) {
+  if (!body) return null;
+  const match = body.match(FINGERPRINT_MARKER_REGEX);
+  return match ? match[1] : null;
+}
+function isSummaryComment(body) {
+  return typeof body === "string" && body.includes(SUMMARY_MARKER);
+}
+
+// src/github/reactions.ts
+async function reactToReviewStart(client, pr) {
+  try {
+    if (pr.eventName === "issue_comment") {
+      if (pr.commentId) await client.addCommentReaction?.(pr.commentId, "eyes");
+      return;
+    }
+    if (pr.eventName !== "pull_request" || !client.addPullRequestReaction) return;
+    const comments = await client.fetchIssueComments(pr.pullNumber);
+    const previouslyReviewed = comments.some(
+      (comment) => comment.user?.login === "github-actions[bot]" && isSummaryComment(comment.body)
+    );
+    if (!previouslyReviewed) {
+      await client.addPullRequestReaction(pr.pullNumber, "eyes");
+    }
+  } catch {
+  }
+}
+
 // src/security/exclusions.ts
 var import_picomatch = __toESM(require_picomatch2());
 var MANDATORY_SECRET_PATTERNS = [
@@ -46456,6 +46497,17 @@ var OctokitGitHubClient = class {
     } catch {
     }
   }
+  async addPullRequestReaction(pullNumber, reaction) {
+    try {
+      await this.octokit.rest.reactions.createForIssue({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: pullNumber,
+        content: reaction
+      });
+    } catch {
+    }
+  }
   async fetchPullRequestFiles(pullNumber) {
     try {
       const files = [];
@@ -47007,28 +47059,6 @@ function createProvider(config2) {
   });
 }
 
-// src/review/dedupe.ts
-var import_crypto = __toESM(require("crypto"));
-var FINGERPRINT_MARKER_REGEX = /<!--\s*ai-code-review-fingerprint:v1:([a-f0-9]{32,64})\s*-->/;
-var SUMMARY_MARKER = "<!-- ai-code-review-summary:v1 -->";
-function normalizeText(text) {
-  return text.toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
-}
-function computeFindingFingerprint(repoFullName, pullNumber, finding) {
-  const normalizedExplanation = normalizeText(finding.message);
-  const normalizedRecommendation = normalizeText(finding.recommendation);
-  const input2 = `${repoFullName}|${pullNumber}|${finding.path}|${finding.line}|${finding.severity}|${normalizedExplanation}|${normalizedRecommendation}`;
-  return import_crypto.default.createHash("sha256").update(input2).digest("hex");
-}
-function extractFingerprintFromComment(body) {
-  if (!body) return null;
-  const match = body.match(FINGERPRINT_MARKER_REGEX);
-  return match ? match[1] : null;
-}
-function isSummaryComment(body) {
-  return typeof body === "string" && body.includes(SUMMARY_MARKER);
-}
-
 // src/github/comments.ts
 var SEVERITY_ICONS = {
   critical: "\u{1F6A8} **Critical**",
@@ -47465,9 +47495,6 @@ async function runReview(customClient, customProvider) {
       if (prDetails.action !== "created" || !prDetails.mayTriggerReview) {
         return setActionOutputs({ status: "skipped", reasonCode: "comment_trigger_not_authorized", reviewedFiles: 0, publishedFindings: 0 });
       }
-      if (prDetails.commentId && client.addCommentReaction) {
-        await client.addCommentReaction(prDetails.commentId, "eyes");
-      }
     } else {
       if (prDetails.eventName !== "pull_request") {
         return setActionOutputs({ status: "skipped", reasonCode: "unsupported_event", reviewedFiles: 0, publishedFindings: 0 });
@@ -47597,6 +47624,7 @@ async function runReview(customClient, customProvider) {
     for (const file2 of budget.includedFiles) {
       filePatchMap.set(file2.path, file2);
     }
+    await reactToReviewStart(client, prDetails);
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), 6e4);
     let rawFindings = [];

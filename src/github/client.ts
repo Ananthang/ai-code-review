@@ -62,6 +62,7 @@ export interface GitHubClient {
     summaryBody: string,
     existingCommentId?: number
   ): Promise<{ commentId: number }>;
+  addPullRequestReaction?(pullNumber: number, reaction: 'eyes'): Promise<void>;
   addCommentReaction?(
     commentId: number,
     reaction: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes'
@@ -172,6 +173,20 @@ export class OctokitGitHubClient implements GitHubClient {
       });
     } catch {
       // Ignored if reaction fails or token lacks reaction permissions
+    }
+  }
+
+  public async addPullRequestReaction(pullNumber: number, reaction: 'eyes'): Promise<void> {
+    try {
+      // A PR description uses the issue reaction endpoint, not an issue-comment ID.
+      await this.octokit.rest.reactions.createForIssue({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: pullNumber,
+        content: reaction,
+      });
+    } catch {
+      // Cosmetic feedback must not prevent review when permissions are limited.
     }
   }
 
