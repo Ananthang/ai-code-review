@@ -1,6 +1,6 @@
 {
   "name": "ai-code-review",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Bounded, comment-only AI feedback on GitHub pull requests using Gemini and a provider-neutral interface.",
   "main": "dist/index.js",
   "scripts": {
