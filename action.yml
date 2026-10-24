@@ -74,6 +74,10 @@ inputs:
     description: 'Explicit paths to SHA-wrapped local static tool reports (no globs) (newline or comma-separated)'
     required: false
     default: ''
+  fail-on-error:
+    description: 'Fail the GitHub Actions step if the AI provider review fails or returns an error'
+    required: false
+    default: 'false'
 
 outputs:
   status:

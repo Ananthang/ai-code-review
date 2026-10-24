@@ -300,6 +300,10 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         // Safe fallback if GitHub comment publishing fails
       }
 
+      if (config.failOnError) {
+        core.setFailed(`AI Code Review incomplete: ${reasonCode}`);
+      }
+
       return setActionOutputs({
         status,
         reasonCode,
@@ -361,6 +365,10 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       status = 'partial';
       reasonCode = 'stale_head_discarded';
       SafeLogger.warning('PR head changed during review execution; findings were safely discarded.');
+      if (config.failOnError) {
+        core.setFailed(`AI Code Review incomplete: ${reasonCode}`);
+      }
+
       return setActionOutputs({
         status,
         reasonCode,

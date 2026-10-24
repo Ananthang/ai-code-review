@@ -36,6 +36,7 @@ export const ConfigSchema = z.object({
     message: 'Only "comment" mode is supported (merge gating and approval are excluded)',
   }),
   staticReportPaths: z.array(z.string()).default([]),
+  failOnError: z.boolean().default(false),
 });
 
 function parseSplitLines(raw: string): string[] {
@@ -95,6 +96,9 @@ export function parseConfig(overrides?: Partial<Config>): Config {
 
   const excludePatterns = overrides?.excludePatterns ?? parseSplitLines(core.getInput('exclude-patterns'));
   const staticReportPaths = overrides?.staticReportPaths ?? parseSplitLines(core.getInput('static-report-paths'));
+  const failOnError = overrides?.failOnError !== undefined
+    ? overrides.failOnError
+    : parseBooleanInput(core.getInput('fail-on-error'), false);
 
   // Mask sensitive values
   if (providerApiKey) {
@@ -122,6 +126,7 @@ export function parseConfig(overrides?: Partial<Config>): Config {
     excludePatterns,
     mode: modeRaw,
     staticReportPaths,
+    failOnError,
   };
 
   const parsed = ConfigSchema.safeParse(rawConfig);

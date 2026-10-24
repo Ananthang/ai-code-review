@@ -22143,6 +22143,7 @@ var Summary = class {
   }
 };
 var _summary = new Summary();
+var summary = _summary;
 
 // node_modules/@actions/core/lib/platform.js
 var import_os2 = __toESM(require("os"), 1);
@@ -22186,6 +22187,10 @@ function setOutput(name, value) {
   }
   process.stdout.write(os4.EOL);
   issueCommand("set-output", { name }, toCommandValue(value));
+}
+function setFailed(message) {
+  process.exitCode = ExitCode.Failure;
+  error(message);
 }
 function error(message, properties = {}) {
   issueCommand("error", toCommandProperties(properties), message instanceof Error ? message.toString() : message);
@@ -42167,7 +42172,8 @@ var ConfigSchema = external_exports.object({
   mode: external_exports.literal("comment", {
     message: 'Only "comment" mode is supported (merge gating and approval are excluded)'
   }),
-  staticReportPaths: external_exports.array(external_exports.string()).default([])
+  staticReportPaths: external_exports.array(external_exports.string()).default([]),
+  failOnError: external_exports.boolean().default(false)
 });
 function parseSplitLines(raw) {
   if (!raw || !raw.trim()) return [];
@@ -42205,6 +42211,7 @@ function parseConfig(overrides) {
   const modeRaw = (overrides?.mode ?? (getInput("mode") || "comment")).trim();
   const excludePatterns = overrides?.excludePatterns ?? parseSplitLines(getInput("exclude-patterns"));
   const staticReportPaths = overrides?.staticReportPaths ?? parseSplitLines(getInput("static-report-paths"));
+  const failOnError = overrides?.failOnError !== void 0 ? overrides.failOnError : parseBooleanInput(getInput("fail-on-error"), false);
   if (providerApiKey) {
     setSecret(providerApiKey);
   }
@@ -42228,7 +42235,8 @@ function parseConfig(overrides) {
     reviewLanguage,
     excludePatterns,
     mode: modeRaw,
-    staticReportPaths
+    staticReportPaths,
+    failOnError
   };
   const parsed = ConfigSchema.safeParse(rawConfig);
   if (!parsed.success) {
@@ -46939,7 +46947,13 @@ var HttpProvider = class {
           if (this.options.apiKey) headers.Authorization = `Bearer ${this.options.apiKey}`;
           break;
       }
-      const response = await fetch(url2, { method: "POST", headers, body, signal, redirect: "error" });
+      let response = await fetch(url2, { method: "POST", headers, body, signal, redirect: "error" });
+      if (response.status === 503 && !signal.aborted) {
+        await response.body?.cancel();
+        await new Promise((resolve) => setTimeout(resolve, 2e3));
+        signal.throwIfAborted();
+        response = await fetch(url2, { method: "POST", headers, body, signal, redirect: "error" });
+      }
       if (!response.ok) {
         await response.body?.cancel();
         throw new Error(`provider_http_${response.status}`);
@@ -47306,6 +47320,12 @@ async function publishFindingsAndSummary(client, repoFullName, pullNumber, expec
     await client.createOrUpdateSummary(pullNumber, summaryMarkdown, existingSummary?.id);
   } catch {
     publishResult.errors.push("summary_publication_failed");
+  }
+  try {
+    if (summary && typeof summary.addRaw === "function") {
+      await summary.addRaw(summaryMarkdown).write();
+    }
+  } catch {
   }
   return {
     publishedCount: publishResult.publishedCount,
@@ -47774,6 +47794,9 @@ async function runReview(customClient, customProvider) {
         );
       } catch {
       }
+      if (config2.failOnError) {
+        setFailed(`AI Code Review incomplete: ${reasonCode}`);
+      }
       return setActionOutputs({
         status,
         reasonCode,
@@ -47831,6 +47854,9 @@ async function runReview(customClient, customProvider) {
       status = "partial";
       reasonCode = "stale_head_discarded";
       SafeLogger.warning("PR head changed during review execution; findings were safely discarded.");
+      if (config2.failOnError) {
+        setFailed(`AI Code Review incomplete: ${reasonCode}`);
+      }
       return setActionOutputs({
         status,
         reasonCode,

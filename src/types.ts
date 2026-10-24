@@ -76,4 +76,5 @@ export interface Config {
   excludePatterns: string[];
   mode: 'comment';
   staticReportPaths: string[];
+  failOnError: boolean;
 }

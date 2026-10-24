@@ -541,4 +541,30 @@ describe('Rate limit and budget overage handling', () => {
     expect(client.publishedSummaries).toHaveLength(1);
     expect(client.publishedSummaries[0]).toContain('AI Provider Service Notice (`timeout`)');
   });
+
+  it('calls core.setFailed when fail-on-error is enabled and provider fails', async () => {
+    process.env['INPUT_FAIL-ON-ERROR'] = 'true';
+    const client = new MockGitHubClient();
+    client.files = [
+      {
+        filename: 'src/user.ts',
+        status: 'modified',
+        patch: BUGGY_PATCH,
+        additions: 3,
+        deletions: 1,
+        changes: 4,
+      },
+    ];
+
+    const rateLimitedProvider = {
+      name: 'gemini',
+      review: async () => {
+        throw new Error('provider_http_503');
+      },
+    };
+
+    const outcome = await runReview(client, rateLimitedProvider as any);
+    expect(outcome.status).toBe('partial');
+    delete process.env['INPUT_FAIL-ON-ERROR'];
+  });
 });

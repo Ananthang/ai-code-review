@@ -87,7 +87,14 @@ export class HttpProvider implements AIProvider {
           if (this.options.apiKey) headers.Authorization = `Bearer ${this.options.apiKey}`;
           break;
       }
-      const response = await fetch(url, { method: 'POST', headers, body, signal, redirect: 'error' });
+      let response = await fetch(url, { method: 'POST', headers, body, signal, redirect: 'error' });
+      // If server returns 503 (transient overload), retry once after a brief delay
+      if (response.status === 503 && !signal.aborted) {
+        await response.body?.cancel();
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        signal.throwIfAborted();
+        response = await fetch(url, { method: 'POST', headers, body, signal, redirect: 'error' });
+      }
       if (!response.ok) {
         await response.body?.cancel();
         throw new Error(`provider_http_${response.status}`);

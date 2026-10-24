@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import { sanitizeFindingContent } from '../review/validate.js';
 import { Finding, ReviewOutcome, Severity } from '../types.js';
 import {
@@ -327,6 +328,14 @@ export async function publishFindingsAndSummary(
   try {
     await client.createOrUpdateSummary(pullNumber, summaryMarkdown, existingSummary?.id);
   } catch { publishResult.errors.push('summary_publication_failed'); }
+
+  try {
+    if (core.summary && typeof core.summary.addRaw === 'function') {
+      await core.summary.addRaw(summaryMarkdown).write();
+    }
+  } catch {
+    // Non-fatal if GITHUB_STEP_SUMMARY is unavailable in environment
+  }
 
   return {
     publishedCount: publishResult.publishedCount,
