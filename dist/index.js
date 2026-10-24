@@ -22418,6 +22418,9 @@ function assertReviewOnlyInput(input2) {
   if (input2.files.some((file2) => hasPromptInjection(file2.path + "\n" + file2.patch))) {
     throw new Error("ai_guard_prompt_injection");
   }
+  if (input2.customInstructions && CREDENTIAL_MARKERS.some((pattern) => pattern.test(input2.customInstructions))) {
+    throw new Error("ai_guard_credential_marker");
+  }
   if (input2.customInstructions && hasPromptInjection(input2.customInstructions)) {
     throw new Error("ai_guard_prompt_injection");
   }
@@ -42153,8 +42156,8 @@ var LIMIT_CEILINGS = {
   // 500 KiB
   MAX_INPUT_TOKENS: 1e5,
   MAX_OUTPUT_TOKENS: 8192,
-  MAX_REQUESTS: 1,
-  // Fixed ceiling of 1 in the MVP
+  MAX_REQUESTS: 2,
+  // One primary request and one explicitly budgeted fallback
   MAX_FINDINGS: 50
 };
 var ConfigSchema = external_exports.object({
@@ -42172,7 +42175,7 @@ var ConfigSchema = external_exports.object({
   maxInputBytes: external_exports.number().int().positive().max(LIMIT_CEILINGS.MAX_INPUT_BYTES),
   maxInputTokens: external_exports.number().int().positive().max(LIMIT_CEILINGS.MAX_INPUT_TOKENS),
   maxOutputTokens: external_exports.number().int().positive().max(LIMIT_CEILINGS.MAX_OUTPUT_TOKENS),
-  maxRequests: external_exports.number().int().positive().max(LIMIT_CEILINGS.MAX_REQUESTS, "max-requests cannot exceed 1 in MVP"),
+  maxRequests: external_exports.number().int().positive().max(LIMIT_CEILINGS.MAX_REQUESTS, "max-requests cannot exceed 2"),
   maxFindings: external_exports.number().int().positive().max(LIMIT_CEILINGS.MAX_FINDINGS),
   reviewLanguage: external_exports.string().min(1).default("English"),
   excludePatterns: external_exports.array(external_exports.string()).default([]),
@@ -42204,14 +42207,27 @@ function parseNumberInput(raw, defaultValue) {
 }
 function tryReadFile(filePath, workspaceRoot) {
   if (filePath.length >= 260) return void 0;
-  const resolvedPath = import_node_path.default.resolve(workspaceRoot, filePath);
-  if (!resolvedPath.startsWith(workspaceRoot)) return void 0;
-  if (import_node_fs.default.existsSync(resolvedPath) && import_node_fs.default.statSync(resolvedPath).isFile()) {
+  try {
+    const root = import_node_path.default.resolve(workspaceRoot);
+    const realRoot = import_node_fs.default.realpathSync(root);
+    const requested = import_node_path.default.resolve(root, filePath);
+    const withinRoot = (candidate, base = root) => {
+      const relative = import_node_path.default.relative(base, candidate);
+      return relative !== ".." && !relative.startsWith(`..${import_node_path.default.sep}`) && !import_node_path.default.isAbsolute(relative);
+    };
+    if (!withinRoot(requested)) return void 0;
+    const resolved = import_node_fs.default.realpathSync(requested);
+    if (!withinRoot(resolved, realRoot)) return void 0;
+    const fd = import_node_fs.default.openSync(resolved, import_node_fs.default.constants.O_RDONLY | import_node_fs.default.constants.O_NOFOLLOW);
     try {
-      return import_node_fs.default.readFileSync(resolvedPath, "utf8").trim();
-    } catch {
-      return void 0;
+      const stat2 = import_node_fs.default.fstatSync(fd);
+      if (!stat2.isFile() || stat2.size > 64 * 1024) return void 0;
+      return import_node_fs.default.readFileSync(fd, "utf8").trim();
+    } finally {
+      import_node_fs.default.closeSync(fd);
     }
+  } catch {
+    return void 0;
   }
   return void 0;
 }
@@ -42270,14 +42286,11 @@ ${s.content}` : s.content).join("\n\n");
     import_node_path.default.join(workspaceRoot, ".github", "ai-review.txt")
   ];
   for (const candidate of defaultFileCandidates) {
-    if (import_node_fs.default.existsSync(candidate) && import_node_fs.default.statSync(candidate).isFile()) {
-      try {
-        const content = import_node_fs.default.readFileSync(candidate, "utf8").trim();
-        const rel = import_node_path.default.relative(workspaceRoot, candidate);
-        info(`Loaded custom review instructions from repository file: ${rel}`);
-        return content.slice(0, 16384);
-      } catch {
-      }
+    const content = tryReadFile(candidate, workspaceRoot);
+    if (content !== void 0) {
+      const rel = import_node_path.default.relative(workspaceRoot, candidate);
+      info(`Loaded custom review instructions from repository file: ${rel}`);
+      return content.slice(0, 16384);
     }
   }
   return void 0;
@@ -47076,13 +47089,7 @@ var HttpProvider = class {
           if (this.options.apiKey) headers.Authorization = `Bearer ${this.options.apiKey}`;
           break;
       }
-      let response = await fetch(url2, { method: "POST", headers, body, signal, redirect: "error" });
-      if (response.status === 503 && !signal.aborted) {
-        await response.body?.cancel();
-        await new Promise((resolve) => setTimeout(resolve, 2e3));
-        signal.throwIfAborted();
-        response = await fetch(url2, { method: "POST", headers, body, signal, redirect: "error" });
-      }
+      const response = await fetch(url2, { method: "POST", headers, body, signal, redirect: "error" });
       if (!response.ok) {
         await response.body?.cancel();
         throw new Error(`provider_http_${response.status}`);
@@ -47118,7 +47125,7 @@ var HttpProvider = class {
       switch (this.name) {
         case "gemini":
           const finishReason = data.candidates?.[0]?.finishReason;
-          if (finishReason && !["STOP", "MAX_TOKENS"].includes(finishReason)) {
+          if (finishReason !== "STOP") {
             throw new Error("incomplete_response");
           }
           text = (data.candidates?.[0]?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? "").join("");
@@ -47700,8 +47707,17 @@ async function runReview(customClient, customProvider) {
   let publishedCount = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  let failOnError = ["true", "1", "yes"].includes(getInput("fail-on-error").trim().toLowerCase());
+  const finish = (outcome) => {
+    const result = setActionOutputs(outcome);
+    if (failOnError && (outcome.status === "failed" || outcome.status === "partial")) {
+      setFailed(`AI Code Review incomplete: ${outcome.reasonCode ?? outcome.status}`);
+    }
+    return result;
+  };
   try {
     const config2 = parseConfig();
+    failOnError = config2.failOnError;
     if (config2.providerApiKey) {
       SafeLogger.registerSecret(config2.providerApiKey);
     }
@@ -47718,34 +47734,34 @@ async function runReview(customClient, customProvider) {
         status = "skipped";
         reasonCode = "comment_not_a_trigger";
         SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: comment is not a review trigger command`);
-        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
       if (prDetails.action !== "created" || !prDetails.mayTriggerReview) {
-        return setActionOutputs({ status: "skipped", reasonCode: "comment_trigger_not_authorized", reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status: "skipped", reasonCode: "comment_trigger_not_authorized", reviewedFiles: 0, publishedFindings: 0 });
       }
     } else {
       if (prDetails.eventName !== "pull_request") {
-        return setActionOutputs({ status: "skipped", reasonCode: "unsupported_event", reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status: "skipped", reasonCode: "unsupported_event", reviewedFiles: 0, publishedFindings: 0 });
       }
       const allowedActions = ["opened", "synchronize", "reopened"];
       if (!allowedActions.includes(prDetails.action)) {
         status = "skipped";
         reasonCode = "unsupported_pr_action";
         SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: action '${prDetails.action}' is not reviewed`);
-        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
     }
     if (prDetails.isFork) {
       status = "skipped";
       reasonCode = "fork_pr_skipped";
       SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: fork pull requests are excluded for security`);
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
     if (prDetails.isDraft) {
       status = "skipped";
       reasonCode = "draft_pr_skipped";
       SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: draft pull requests are excluded`);
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
     const effectiveProvider = customProvider ? customProvider.name : config2.provider;
     if (["gemini", "openai", "anthropic"].includes(effectiveProvider)) {
@@ -47755,23 +47771,23 @@ async function runReview(customClient, customProvider) {
         SafeLogger.warning(
           "Diff review skipped: allow-external-provider is false. Explicit opt-in is required before diffs leave GitHub."
         );
-        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
       if (!config2.providerApiKey) {
         status = "skipped";
         reasonCode = "missing_provider_api_key";
         SafeLogger.warning("Diff review skipped: provider-api-key is required for the selected provider.");
-        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
     } else if (!["fake", "ollama"].includes(effectiveProvider)) {
       status = "skipped";
       reasonCode = `unsupported_provider_${effectiveProvider}`;
       SafeLogger.warning(`Diff review skipped: provider '${effectiveProvider}' is not supported in this version.`);
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
     const { files: ghFiles, isComplete } = await client.fetchPullRequestFiles(prDetails.pullNumber);
     if (!isComplete) {
-      return setActionOutputs({ status: "skipped", reasonCode: "incomplete_file_inventory", reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status: "skipped", reasonCode: "incomplete_file_inventory", reviewedFiles: 0, publishedFindings: 0 });
     }
     const exclusionFilter = new PathExclusionFilter(config2.excludePatterns);
     const eligiblePatchFiles = [];
@@ -47780,7 +47796,10 @@ async function runReview(customClient, customProvider) {
       excludedReasons[reason] = (excludedReasons[reason] || 0) + 1;
     };
     const isTargetFileInPR = prDetails.targetFile && ghFiles.some((f) => f.filename === prDetails.targetFile);
-    const effectiveTargetFile = isTargetFileInPR ? prDetails.targetFile : void 0;
+    if (prDetails.targetFile && !isTargetFileInPR) {
+      return finish({ status: "skipped", reasonCode: "target_file_not_found", reviewedFiles: 0, publishedFindings: 0 });
+    }
+    const effectiveTargetFile = prDetails.targetFile;
     for (const ghFile of ghFiles) {
       const filePath = ghFile.filename;
       if (effectiveTargetFile) {
@@ -47824,7 +47843,7 @@ async function runReview(customClient, customProvider) {
       status = "skipped";
       reasonCode = excludedReasons.ai_guard_prompt_injection ? "ai_guard_files_skipped" : "no_eligible_files";
       SafeLogger.info("No eligible files to review after exclusions.");
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
     const provider = customProvider ?? createProvider(config2);
     const budget = budgetFiles(eligiblePatchFiles, {
@@ -47835,7 +47854,8 @@ async function runReview(customClient, customProvider) {
       measureInput: provider instanceof HttpProvider ? (files) => Buffer.byteLength(JSON.stringify(provider.requestBody({
         files,
         maxFindings: config2.maxFindings,
-        language: config2.reviewLanguage
+        language: config2.reviewLanguage,
+        customInstructions: config2.customInstructions
       })), "utf8") : void 0
     });
     for (const skipped of budget.skippedFiles) {
@@ -47847,7 +47867,7 @@ async function runReview(customClient, customProvider) {
       SafeLogger.info("All eligible files exceeded configured size or token budgets.");
       const repoFullName2 = `${prDetails.owner}/${prDetails.repo}`;
       try {
-        await publishFindingsAndSummary(
+        const skippedPublication = await publishFindingsAndSummary(
           client,
           repoFullName2,
           prDetails.pullNumber,
@@ -47867,9 +47887,15 @@ async function runReview(customClient, customProvider) {
           },
           config2.maxFindings
         );
+        if (skippedPublication.errors.length || skippedPublication.staleHead) {
+          status = "partial";
+          reasonCode = skippedPublication.staleHead ? "stale_head_discarded" : "publication_incomplete";
+        }
       } catch {
+        status = "partial";
+        reasonCode = "publication_incomplete";
       }
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
     reviewedFilesCount = budget.includedFiles.length;
     inputTokens = budget.estimatedTokens;
@@ -47908,7 +47934,7 @@ async function runReview(customClient, customProvider) {
       clearTimeout(timeout);
       const isAbort = providerErr instanceof Error && (providerErr.name === "AbortError" || providerErr.message.includes("aborted"));
       let code = isAbort ? "timeout" : providerErr instanceof Error && providerErr.message ? providerErr.message : "provider_request_failed";
-      if ((code === "provider_http_429" || code.includes("429")) && config2.fallbackModel && config2.fallbackModel !== config2.model && !customProvider) {
+      if ((code === "provider_http_429" || code.includes("429")) && config2.fallbackModel && config2.fallbackModel !== config2.model && !customProvider && config2.maxRequests >= 2) {
         SafeLogger.warning(
           `Primary model "${config2.model}" rate limited (429). Attempting configured fallback model: "${config2.fallbackModel}"...`
         );
@@ -47970,10 +47996,7 @@ async function runReview(customClient, customProvider) {
           );
         } catch {
         }
-        if (config2.failOnError) {
-          setFailed(`AI Code Review incomplete: ${reasonCode}`);
-        }
-        return setActionOutputs({
+        return finish({
           status,
           reasonCode,
           reviewedFiles: reviewedFilesCount,
@@ -48032,10 +48055,7 @@ async function runReview(customClient, customProvider) {
       status = "partial";
       reasonCode = "stale_head_discarded";
       SafeLogger.warning("PR head changed during review execution; findings were safely discarded.");
-      if (config2.failOnError) {
-        setFailed(`AI Code Review incomplete: ${reasonCode}`);
-      }
-      return setActionOutputs({
+      return finish({
         status,
         reasonCode,
         reviewedFiles: reviewedFilesCount,
@@ -48065,7 +48085,7 @@ async function runReview(customClient, customProvider) {
     if (prDetails.commentId && client.addCommentReaction) {
       await client.addCommentReaction(prDetails.commentId, "rocket");
     }
-    return setActionOutputs({
+    return finish({
       status,
       reasonCode,
       reviewedFiles: reviewedFilesCount,
@@ -48077,7 +48097,7 @@ async function runReview(customClient, customProvider) {
     SafeLogger.error("Action execution failed; error details withheld to protect source and credentials.");
     status = "failed";
     reasonCode = "unexpected_error";
-    return setActionOutputs({
+    return finish({
       status,
       reasonCode,
       reviewedFiles: reviewedFilesCount,

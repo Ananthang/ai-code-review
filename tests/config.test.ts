@@ -89,14 +89,14 @@ describe('Configuration parsing & limit ceilings', () => {
     ).toThrow(/github-token is required/);
   });
 
-  it('enforces ceiling on max-requests (max 1 in MVP)', () => {
+  it('enforces ceiling on max-requests (maximum 2)', () => {
     expect(() =>
       parseConfig({
         githubToken: 'token',
         model: 'gemini-2.5-flash',
-        maxRequests: 2,
+        maxRequests: 3,
       })
-    ).toThrow(/max-requests cannot exceed 1/);
+    ).toThrow(/max-requests cannot exceed 2/);
   });
 
   it('enforces ceiling on max-files', () => {
@@ -208,5 +208,25 @@ describe('Configuration parsing & limit ceilings', () => {
 
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });
+  });
+});
+
+describe('Instruction file boundaries', () => {
+  it('rejects sibling-prefix escapes and symlinks for explicit and default files', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'review-boundary-'));
+    try {
+      const root = path.join(base, 'repo');
+      const outside = path.join(base, 'repo-private');
+      fs.mkdirSync(path.join(root, '.github'), { recursive: true });
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, 'rules.md'), 'OUTSIDE_SENTINEL');
+      expect(resolveCustomInstructions('../repo-private/rules.md', root)).not.toContain('OUTSIDE_SENTINEL');
+      fs.symlinkSync(path.join(outside, 'rules.md'), path.join(root, 'linked.md'));
+      expect(resolveCustomInstructions('linked.md', root)).not.toContain('OUTSIDE_SENTINEL');
+      fs.symlinkSync(path.join(outside, 'rules.md'), path.join(root, '.github/ai-review.md'));
+      expect(resolveCustomInstructions('', root)).toBeUndefined();
+      fs.symlinkSync(outside, path.join(root, 'linked-directory'));
+      expect(resolveCustomInstructions('linked-directory/rules.md', root)).not.toContain('OUTSIDE_SENTINEL');
+    } finally { fs.rmSync(base, { recursive: true, force: true }); }
   });
 });

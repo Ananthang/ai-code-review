@@ -117,14 +117,7 @@ export class HttpProvider implements AIProvider {
           if (this.options.apiKey) headers.Authorization = `Bearer ${this.options.apiKey}`;
           break;
       }
-      let response = await fetch(url, { method: 'POST', headers, body, signal, redirect: 'error' });
-      // If server returns 503 (transient overload), retry once after a brief delay
-      if (response.status === 503 && !signal.aborted) {
-        await response.body?.cancel();
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        signal.throwIfAborted();
-        response = await fetch(url, { method: 'POST', headers, body, signal, redirect: 'error' });
-      }
+      const response = await fetch(url, { method: 'POST', headers, body, signal, redirect: 'error' });
       if (!response.ok) {
         await response.body?.cancel();
         throw new Error(`provider_http_${response.status}`);
@@ -159,7 +152,7 @@ export class HttpProvider implements AIProvider {
       switch (this.name) {
         case 'gemini':
           const finishReason = data.candidates?.[0]?.finishReason;
-          if (finishReason && !['STOP', 'MAX_TOKENS'].includes(finishReason)) {
+          if (finishReason !== 'STOP') {
             throw new Error('incomplete_response');
           }
           text = (data.candidates?.[0]?.content?.parts ?? [])

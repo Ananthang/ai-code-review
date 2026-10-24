@@ -51,7 +51,7 @@ inputs:
     required: false
     default: '4000'
   max-requests:
-    description: 'Maximum provider requests per run (fixed ceiling: 1 in MVP)'
+    description: 'Maximum provider requests per run (default 1; set 2 to permit one configured fallback)'
     required: false
     default: '1'
   max-findings:
@@ -75,7 +75,7 @@ inputs:
     required: false
     default: ''
   fail-on-error:
-    description: 'Fail the GitHub Actions step if the AI provider review fails or returns an error'
+    description: 'Fail the GitHub Actions step for any failed or partial review, including configuration, validation and publication errors'
     required: false
     default: 'false'
   thinking-level:
@@ -87,7 +87,7 @@ inputs:
     required: false
     default: ''
   fallback-model:
-    description: 'Optional fallback model to attempt if the primary model returns a 429 rate limit error (e.g. gemini-2.5-flash-lite)'
+    description: 'Optional fallback model on HTTP 429; requires max-requests: 2'
     required: false
     default: ''
 

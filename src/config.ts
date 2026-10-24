@@ -11,7 +11,7 @@ export const LIMIT_CEILINGS = {
   MAX_INPUT_BYTES: 500 * 1024, // 500 KiB
   MAX_INPUT_TOKENS: 100000,
   MAX_OUTPUT_TOKENS: 8192,
-  MAX_REQUESTS: 1, // Fixed ceiling of 1 in the MVP
+  MAX_REQUESTS: 2, // One primary request and one explicitly budgeted fallback
   MAX_FINDINGS: 50,
 } as const;
 
@@ -30,7 +30,7 @@ export const ConfigSchema = z.object({
   maxInputBytes: z.number().int().positive().max(LIMIT_CEILINGS.MAX_INPUT_BYTES),
   maxInputTokens: z.number().int().positive().max(LIMIT_CEILINGS.MAX_INPUT_TOKENS),
   maxOutputTokens: z.number().int().positive().max(LIMIT_CEILINGS.MAX_OUTPUT_TOKENS),
-  maxRequests: z.number().int().positive().max(LIMIT_CEILINGS.MAX_REQUESTS, 'max-requests cannot exceed 1 in MVP'),
+  maxRequests: z.number().int().positive().max(LIMIT_CEILINGS.MAX_REQUESTS, 'max-requests cannot exceed 2'),
   maxFindings: z.number().int().positive().max(LIMIT_CEILINGS.MAX_FINDINGS),
   reviewLanguage: z.string().min(1).default('English'),
   excludePatterns: z.array(z.string()).default([]),
@@ -69,16 +69,25 @@ function parseNumberInput(raw: string | number | undefined, defaultValue: number
 
 function tryReadFile(filePath: string, workspaceRoot: string): string | undefined {
   if (filePath.length >= 260) return undefined;
-  const resolvedPath = path.resolve(workspaceRoot, filePath);
-  // Ensure path stays within workspace boundaries for security
-  if (!resolvedPath.startsWith(workspaceRoot)) return undefined;
-  if (fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isFile()) {
+  try {
+    const root = path.resolve(workspaceRoot);
+    const realRoot = fs.realpathSync(root);
+    const requested = path.resolve(root, filePath);
+    const withinRoot = (candidate: string, base = root) => {
+      const relative = path.relative(base, candidate);
+      return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    };
+    if (!withinRoot(requested)) return undefined;
+    const resolved = fs.realpathSync(requested);
+    if (!withinRoot(resolved, realRoot)) return undefined;
+    // Use the resolved target and reject final-component symlink swaps.
+    const fd = fs.openSync(resolved, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
     try {
-      return fs.readFileSync(resolvedPath, 'utf8').trim();
-    } catch {
-      return undefined;
-    }
-  }
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.size > 64 * 1024) return undefined;
+      return fs.readFileSync(fd, 'utf8').trim();
+    } finally { fs.closeSync(fd); }
+  } catch { return undefined; }
   return undefined;
 }
 
@@ -156,15 +165,11 @@ export function resolveCustomInstructions(
   ];
 
   for (const candidate of defaultFileCandidates) {
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-      try {
-        const content = fs.readFileSync(candidate, 'utf8').trim();
-        const rel = path.relative(workspaceRoot, candidate);
-        core.info(`Loaded custom review instructions from repository file: ${rel}`);
-        return content.slice(0, 16384);
-      } catch {
-        // Fallback to next candidate
-      }
+    const content = tryReadFile(candidate, workspaceRoot);
+    if (content !== undefined) {
+      const rel = path.relative(workspaceRoot, candidate);
+      core.info(`Loaded custom review instructions from repository file: ${rel}`);
+      return content.slice(0, 16384);
     }
   }
 

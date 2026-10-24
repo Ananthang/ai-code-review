@@ -32,6 +32,9 @@ export function assertReviewOnlyInput(input: {
   if (input.files.some((file) => hasPromptInjection(file.path + '\n' + file.patch))) {
     throw new Error('ai_guard_prompt_injection');
   }
+  if (input.customInstructions && CREDENTIAL_MARKERS.some((pattern) => pattern.test(input.customInstructions!))) {
+    throw new Error('ai_guard_credential_marker');
+  }
   if (input.customInstructions && hasPromptInjection(input.customInstructions)) {
     throw new Error('ai_guard_prompt_injection');
   }

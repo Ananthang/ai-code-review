@@ -68,3 +68,17 @@ This is a code and local-test review, not an exhaustive security audit or a prod
 ## Follow-up: review-only guard
 
 Added mandatory scope instructions, JSON-encoded untrusted input, injection tripwires, strict output fields, tool-call rejection and safer rendering across all four providers. See [AI_GUARD.md](AI_GUARD.md) for behavior, tests and limitations.
+
+## Remediation — 25 October 2026
+
+Fixed the seven findings from the latest review:
+
+- Instruction file reads now check both lexical and real filesystem boundaries, including automatically detected files. Escaping symlinks and sibling-prefix paths are rejected; file reads are limited to 64 KiB before the existing instruction-length limit.
+- Custom instructions containing recognized credential markers are rejected before provider access.
+- HTTP 503 no longer triggers an automatic retry. The default maximum is one request per run. An explicit `max-requests: 2` permits one configured HTTP 429 fallback; no further requests are attempted.
+- Gemini responses require `STOP`; missing finish reasons and `MAX_TOKENS` are incomplete responses, even if the JSON parses.
+- Whole-file budgeting includes custom instructions, allowing fewer files to fit instead of failing the final request-size check.
+- Missing explicit file targets return `target_file_not_found`, without broadening review scope.
+- A common finalizer applies `fail-on-error` to all failed/partial outcomes, including configuration, validation and publication errors. Intentional skips remain advisory unless reporting that skip itself fails.
+
+Regression checks use synthetic files and mocked HTTP; no live provider calls or release publishing were performed. Earlier unrelated open items remain outside this remediation.

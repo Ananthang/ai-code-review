@@ -62,7 +62,7 @@ For local Ollama, use the separate instructions in [PROVIDERS.md](docs/PROVIDERS
 | `max-input-bytes` | 81,920, ceiling 512,000; includes serialized instructions and envelope |
 | `max-input-tokens` | 24,000, ceiling 100,000; conservative byte-based guard, not actual billing |
 | `max-output-tokens` | 4,000, ceiling 8,192; selected model must support this value |
-| `max-requests` | 1; no automatic retries |
+| `max-requests` | Default 1; maximum 2 for an explicitly configured fallback; no HTTP retries |
 | `max-findings` | 10, ceiling 50 |
 | `review-language` | English |
 | `exclude-patterns` | Additional newline/comma-separated globs; secret exclusions remain mandatory |
@@ -171,9 +171,10 @@ If you are using Google AI Studio free tier and frequently hit `429 Too Many Req
     allow-external-provider: 'true'
     model: 'gemini-2.5-flash'
     fallback-model: 'gemini-2.5-flash-lite'
+    max-requests: 2
 ```
 
-- If the primary model returns HTTP 429, the action immediately attempts review with `fallback-model`.
+- If the primary model returns HTTP 429, the action attempts `fallback-model` only when `max-requests: 2` explicitly permits a second call. With the default of 1, no fallback call is made. HTTP 503 is not automatically retried.
 - When fallback succeeds, the PR summary comment clearly indicates: `gemini / gemini-2.5-flash-lite (fallback on 429)`.
 - If no `fallback-model` is specified, no fallback request is attempted.
 
@@ -201,3 +202,5 @@ Build runs TypeScript checking and regenerates `dist/index.js`. Commit the regen
 ## License
 
 [MIT](LICENSE).
+
+Custom instruction files must resolve inside the workspace; escaping symlinks and sibling-directory paths are not read. Recognized credential markers in custom instructions stop review before provider access. Instruction text is included in the selection budget. A missing `/review <file>` target reports `target_file_not_found` without reviewing other files. `fail-on-error: true` fails every partial/failed outcome; intentional skips remain non-failing.

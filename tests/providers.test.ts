@@ -86,3 +86,21 @@ describe('Provider HTTP contracts (mocked; no live billing)', () => {
     expect(ollamaEndpoint('https://remote.example', true)).toBe('https://remote.example/api/chat');
   });
 });
+
+describe('Review regression protections', () => {
+  it.each(cases)('%s sends no credentials embedded in instructions', async (name) => {
+    const request = vi.fn(); vi.stubGlobal('fetch', request);
+    const provider = new HttpProvider(name, { apiKey: 'test-key', model: 'test' });
+    await expect(provider.review({ ...input, customInstructions: 'Service key: AKIAIOSFODNN7EXAMPLE' }, new AbortController().signal)).rejects.toThrow();
+    expect(request).not.toHaveBeenCalled();
+  });
+  it.each(cases)('%s does not retry 503', async (name) => {
+    const request = vi.fn().mockResolvedValue(new Response('', { status: 503 })); vi.stubGlobal('fetch', request);
+    await expect(new HttpProvider(name, { apiKey: 'test-key', model: 'test' }).review(input, new AbortController().signal)).rejects.toThrow('provider_http_503');
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it.each(['MAX_TOKENS', undefined])('rejects Gemini finish reason %s even with valid empty findings', async (reason) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ candidates: [{ finishReason: reason, content: { parts: [{ text: '{"findings":[]}' }] } }] }))));
+    await expect(new HttpProvider('gemini', { apiKey: 'key', model: 'test' }).review(input, new AbortController().signal)).rejects.toThrow('incomplete_response');
+  });
+});

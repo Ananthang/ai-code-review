@@ -1,4 +1,10 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as core from '@actions/core';
+vi.mock('@actions/core', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@actions/core')>(),
+  setFailed: vi.fn(),
+}));
+import { HttpProvider } from '../src/providers/http.js';
 import { runReview } from '../src/index.js';
 import {
   ExistingIssueComment,
@@ -313,7 +319,7 @@ describe('End-to-end review orchestration', () => {
     expect(outcome.publishedFindings).toBe(1);
   });
 
-  it('falls back to full review when user comments /review updated or non-file argument', async () => {
+  it('skips review when a requested target is not a changed file', async () => {
     const mockClient = new MockGitHubClient();
     mockClient.prDetails = {
       ...mockClient.prDetails,
@@ -346,8 +352,9 @@ describe('End-to-end review orchestration', () => {
 
     const fakeProvider = new FakeProvider();
     const outcome = await runReview(mockClient, fakeProvider);
-    expect(outcome.status).toBe('completed');
-    expect(outcome.reviewedFiles).toBe(2); // Gracefully reviews both files!
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('target_file_not_found');
+    expect(outcome.reviewedFiles).toBe(0);
   });
 
   it('skips non-trigger comments safely (e.g. "looks good to me")', async () => {
@@ -566,5 +573,70 @@ describe('Rate limit and budget overage handling', () => {
     const outcome = await runReview(client, rateLimitedProvider as any);
     expect(outcome.status).toBe('partial');
     delete process.env['INPUT_FAIL-ON-ERROR'];
+  });
+});
+
+describe('Seven-issue regression coverage', () => {
+  beforeEach(() => {
+    vi.stubEnv('GITHUB_TOKEN', 'test-token'); vi.stubEnv('AI_MODEL', 'test-model');
+    vi.stubEnv('INPUT_PROVIDER', 'gemini'); vi.stubEnv('INPUT_PROVIDER-API-KEY', 'synthetic');
+    vi.stubEnv('INPUT_ALLOW-EXTERNAL-PROVIDER', 'true'); vi.stubEnv('INPUT_CUSTOM-INSTRUCTIONS', 'none');
+    vi.stubEnv('INPUT_FAIL-ON-ERROR', 'false');
+  });
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  function ready() {
+    const client = new MockGitHubClient();
+    client.files = [{ filename: 'a.ts', patch: BUGGY_PATCH, status: 'modified', additions: 3, deletions: 1, changes: 4 }];
+    return client;
+  }
+  it('does not broaden a missing target into a full review', async () => {
+    const client = ready(); Object.assign(client.prDetails, { eventName: 'issue_comment', action: 'created', commentBody: '/review absent.ts', targetFile: 'absent.ts', commentId: 123, mayTriggerReview: true });
+    const review = vi.fn();
+    expect((await runReview(client, { name: 'fake', review })).reasonCode).toBe('target_file_not_found');
+    expect(review).not.toHaveBeenCalled(); expect(client.reactions).toHaveLength(0);
+  });
+  it.each([1, 2])('enforces a total of %i calls with fallback configured', async (limit) => {
+    vi.stubEnv('INPUT_MAX-REQUESTS', String(limit)); vi.stubEnv('INPUT_FALLBACK-MODEL', 'fallback-test');
+    const request = vi.fn().mockImplementation(async () => new Response('', { status: 429 })); vi.stubGlobal('fetch', request);
+    expect((await runReview(ready())).status).toBe('partial');
+    expect(request).toHaveBeenCalledTimes(limit);
+  });
+  it('selects fewer files when instructions consume part of the input budget', async () => {
+    const client = ready(); client.files.push({ ...client.files[0], filename: 'b.ts' });
+    const customInstructions = 'Check null handling. '.repeat(100);
+    vi.stubEnv('INPUT_CUSTOM-INSTRUCTIONS', customInstructions);
+    const provider = new HttpProvider('gemini', { apiKey: 'synthetic', model: 'test-model' });
+    const oneFile = { files: [{ path: 'a.ts', patch: BUGGY_PATCH }], maxFindings: 10, language: 'English', customInstructions };
+    vi.stubEnv('INPUT_MAX-INPUT-BYTES', String(Buffer.byteLength(JSON.stringify(provider.requestBody(oneFile))) + 20));
+    const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"findings":[]}' }] } }] })));
+    vi.stubGlobal('fetch', request);
+    const outcome = await runReview(client);
+    expect(outcome.status).toBe('completed'); expect(outcome.reviewedFiles).toBe(1);
+    expect(request).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(request.mock.calls[0][1].body);
+    expect(JSON.parse(body.contents[0].parts[0].text).customInstructions).toBe(customInstructions.trim());
+  });
+  it.each(['configuration', 'unexpected', 'publication', 'summary', 'validation', 'skipped-summary'] as const)('honors fail-on-error for %s failures', async (kind) => {
+    vi.stubEnv('INPUT_FAIL-ON-ERROR', 'true');
+    const failed = vi.mocked(core.setFailed).mockClear();
+    const client = ready();
+    if (kind === 'configuration') vi.stubEnv('INPUT_MAX-FILES', 'not-a-number');
+    if (kind === 'unexpected') client.fetchPullRequestFiles = async () => { throw new Error('synthetic'); };
+    if (kind === 'publication') client.publishReviewComments = async () => ({ publishedCount: 0, errors: ['denied'] });
+    if (kind === 'skipped-summary') {
+      vi.stubEnv('INPUT_MAX-INPUT-BYTES', '1');
+      client.createOrUpdateSummary = async () => { throw new Error('denied'); };
+    }
+    if (kind === 'summary') client.createOrUpdateSummary = async () => { throw new Error('denied'); };
+    const provider = new FakeProvider({ findings: kind === 'validation' ? [{ path: 'a.ts', line: 99999, severity: 'high', message: 'Bug', recommendation: 'Fix' }] : [] });
+    const outcome = await runReview(client, provider);
+    expect(['partial', 'failed']).toContain(outcome.status);
+    expect(failed).toHaveBeenCalledOnce();
+  });
+  it('leaves advisory failures non-blocking by default', async () => {
+    const failed = vi.mocked(core.setFailed).mockClear();
+    const client = ready(); client.fetchPullRequestFiles = async () => { throw new Error('synthetic'); };
+    expect((await runReview(client, new FakeProvider())).status).toBe('failed');
+    expect(failed).not.toHaveBeenCalled();
   });
 });

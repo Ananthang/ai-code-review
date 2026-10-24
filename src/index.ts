@@ -22,10 +22,20 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
   let publishedCount = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  // Read this before validation so malformed configuration also respects fail-on-error.
+  let failOnError = ['true', '1', 'yes'].includes(core.getInput('fail-on-error').trim().toLowerCase());
+  const finish = (outcome: ReviewOutcome): ReviewOutcome => {
+    const result = setActionOutputs(outcome);
+    if (failOnError && (outcome.status === 'failed' || outcome.status === 'partial')) {
+      core.setFailed(`AI Code Review incomplete: ${outcome.reasonCode ?? outcome.status}`);
+    }
+    return result;
+  };
 
   try {
     // 1. Parse configuration and validate limits
     const config = parseConfig();
+    failOnError = config.failOnError;
 
     if (config.providerApiKey) {
       SafeLogger.registerSecret(config.providerApiKey);
@@ -49,23 +59,23 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         status = 'skipped';
         reasonCode = 'comment_not_a_trigger';
         SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: comment is not a review trigger command`);
-        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
 
       if (prDetails.action !== 'created' || !prDetails.mayTriggerReview) {
-        return setActionOutputs({ status: 'skipped', reasonCode: 'comment_trigger_not_authorized', reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status: 'skipped', reasonCode: 'comment_trigger_not_authorized', reviewedFiles: 0, publishedFindings: 0 });
       }
 
     } else {
       if (prDetails.eventName !== 'pull_request') {
-        return setActionOutputs({ status: 'skipped', reasonCode: 'unsupported_event', reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status: 'skipped', reasonCode: 'unsupported_event', reviewedFiles: 0, publishedFindings: 0 });
       }
       const allowedActions = ['opened', 'synchronize', 'reopened'];
       if (!allowedActions.includes(prDetails.action)) {
         status = 'skipped';
         reasonCode = 'unsupported_pr_action';
         SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: action '${prDetails.action}' is not reviewed`);
-        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
     }
 
@@ -73,14 +83,14 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       status = 'skipped';
       reasonCode = 'fork_pr_skipped';
       SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: fork pull requests are excluded for security`);
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
     if (prDetails.isDraft) {
       status = 'skipped';
       reasonCode = 'draft_pr_skipped';
       SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: draft pull requests are excluded`);
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
     // 3. Provider validation & external provider opt-in check (FR-05, FR-10)
@@ -93,26 +103,26 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         SafeLogger.warning(
           'Diff review skipped: allow-external-provider is false. Explicit opt-in is required before diffs leave GitHub.'
         );
-        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
 
       if (!config.providerApiKey) {
         status = 'skipped';
         reasonCode = 'missing_provider_api_key';
         SafeLogger.warning('Diff review skipped: provider-api-key is required for the selected provider.');
-        return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
     } else if (!['fake', 'ollama'].includes(effectiveProvider)) {
       status = 'skipped';
       reasonCode = `unsupported_provider_${effectiveProvider}`;
       SafeLogger.warning(`Diff review skipped: provider '${effectiveProvider}' is not supported in this version.`);
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
     // 4. GitHub API diff collection and exclusions (FR-02, FR-03)
     const { files: ghFiles, isComplete } = await client.fetchPullRequestFiles(prDetails.pullNumber);
     if (!isComplete) {
-      return setActionOutputs({ status: 'skipped', reasonCode: 'incomplete_file_inventory', reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status: 'skipped', reasonCode: 'incomplete_file_inventory', reviewedFiles: 0, publishedFindings: 0 });
     }
 
     const exclusionFilter = new PathExclusionFilter(config.excludePatterns);
@@ -124,7 +134,10 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     };
 
     const isTargetFileInPR = prDetails.targetFile && ghFiles.some((f) => f.filename === prDetails.targetFile);
-    const effectiveTargetFile = isTargetFileInPR ? prDetails.targetFile : undefined;
+    if (prDetails.targetFile && !isTargetFileInPR) {
+      return finish({ status: 'skipped', reasonCode: 'target_file_not_found', reviewedFiles: 0, publishedFindings: 0 });
+    }
+    const effectiveTargetFile = prDetails.targetFile;
 
     for (const ghFile of ghFiles) {
       const filePath = ghFile.filename;
@@ -178,7 +191,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       status = 'skipped';
       reasonCode = excludedReasons.ai_guard_prompt_injection ? 'ai_guard_files_skipped' : 'no_eligible_files';
       SafeLogger.info('No eligible files to review after exclusions.');
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
     // 5. Budget enforcement (FR-04)
@@ -189,7 +202,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       maxInputBytes: config.maxInputBytes,
       maxInputTokens: config.maxInputTokens,
       measureInput: provider instanceof HttpProvider ? (files) => Buffer.byteLength(JSON.stringify(provider.requestBody({
-        files, maxFindings: config.maxFindings, language: config.reviewLanguage,
+        files, maxFindings: config.maxFindings, language: config.reviewLanguage, customInstructions: config.customInstructions,
       })), 'utf8') : undefined,
     });
 
@@ -204,7 +217,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
       const repoFullName = `${prDetails.owner}/${prDetails.repo}`;
       try {
-        await publishFindingsAndSummary(
+        const skippedPublication = await publishFindingsAndSummary(
           client,
           repoFullName,
           prDetails.pullNumber,
@@ -224,11 +237,16 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
           },
           config.maxFindings
         );
+        if (skippedPublication.errors.length || skippedPublication.staleHead) {
+          status = 'partial';
+          reasonCode = skippedPublication.staleHead ? 'stale_head_discarded' : 'publication_incomplete';
+        }
       } catch {
-        // Safe fallback if GitHub comment publishing fails
+        status = 'partial';
+        reasonCode = 'publication_incomplete';
       }
 
-      return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
     reviewedFilesCount = budget.includedFiles.length;
@@ -289,7 +307,8 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         (code === 'provider_http_429' || code.includes('429')) &&
         config.fallbackModel &&
         config.fallbackModel !== config.model &&
-        !customProvider
+        !customProvider &&
+        config.maxRequests >= 2
       ) {
         SafeLogger.warning(
           `Primary model "${config.model}" rate limited (429). Attempting configured fallback model: "${config.fallbackModel}"...`
@@ -362,11 +381,8 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
           // Safe fallback if GitHub comment publishing fails
         }
 
-        if (config.failOnError) {
-          core.setFailed(`AI Code Review incomplete: ${reasonCode}`);
-        }
 
-        return setActionOutputs({
+        return finish({
           status,
           reasonCode,
           reviewedFiles: reviewedFilesCount,
@@ -429,11 +445,8 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       status = 'partial';
       reasonCode = 'stale_head_discarded';
       SafeLogger.warning('PR head changed during review execution; findings were safely discarded.');
-      if (config.failOnError) {
-        core.setFailed(`AI Code Review incomplete: ${reasonCode}`);
-      }
 
-      return setActionOutputs({
+      return finish({
         status,
         reasonCode,
         reviewedFiles: reviewedFilesCount,
@@ -464,7 +477,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       await client.addCommentReaction(prDetails.commentId, 'rocket');
     }
 
-    return setActionOutputs({
+    return finish({
       status,
       reasonCode,
       reviewedFiles: reviewedFilesCount,
@@ -477,7 +490,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     status = 'failed';
     reasonCode = 'unexpected_error';
 
-    return setActionOutputs({
+    return finish({
       status,
       reasonCode,
       reviewedFiles: reviewedFilesCount,
