@@ -43,7 +43,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     if (prDetails.eventName === 'issue_comment') {
       const comment = (prDetails.commentBody || '').trim().toLowerCase();
       const isReviewTrigger =
-        /^\/(?:review|ai-review|recheck)(?:\s+\S+)?$/.test(comment);
+        /^\/(?:review|ai-review|recheck)(?:\s+.*)?$/i.test(comment);
 
       if (!isReviewTrigger) {
         status = 'skipped';
@@ -123,11 +123,14 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       excludedReasons[reason] = (excludedReasons[reason] || 0) + 1;
     };
 
+    const isTargetFileInPR = prDetails.targetFile && ghFiles.some((f) => f.filename === prDetails.targetFile);
+    const effectiveTargetFile = isTargetFileInPR ? prDetails.targetFile : undefined;
+
     for (const ghFile of ghFiles) {
       const filePath = ghFile.filename;
 
-      if (prDetails.targetFile) {
-        if (filePath !== prDetails.targetFile) {
+      if (effectiveTargetFile) {
+        if (filePath !== effectiveTargetFile) {
           continue;
         }
       }

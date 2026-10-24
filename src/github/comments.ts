@@ -105,9 +105,22 @@ export function formatSummaryComment(data: SummaryData): string {
     lines.push('>     max-input-bytes: 200000');
     lines.push('>   ```');
     lines.push('');
+  } else if (data.reasonCode === 'provider_http_503' || data.reasonCode?.includes('503')) {
+    lines.push('> [!WARNING]');
+    lines.push('> ### ⚠️ Gemini Model Temporarily Overloaded (HTTP 503)');
+    lines.push('> Google Gemini servers are temporarily experiencing high traffic or capacity limits.');
+    lines.push('>');
+    lines.push('> **Why this happens:**');
+    lines.push('> - Google Gemini occasionally returns HTTP 503 during momentary server-side traffic spikes.');
+    lines.push('> - This is a temporary upstream condition from Google, not an issue with your code.');
+    lines.push('>');
+    lines.push('> **How to resume:**');
+    lines.push('> - Wait **15 to 30 seconds** and comment `/review` on this PR to re-trigger.');
+    lines.push('');
   } else if (
     data.reasonCode &&
     !data.reasonCode.includes('429') &&
+    !data.reasonCode.includes('503') &&
     data.reasonCode !== 'invalid_findings_dropped' &&
     data.reasonCode !== 'static_reports_skipped' &&
     data.reasonCode !== 'publication_incomplete' &&
@@ -138,6 +151,8 @@ export function formatSummaryComment(data: SummaryData): string {
     lines.push(sanitizeFindingContent(data.overview.trim()));
   } else if (data.reasonCode === 'provider_http_429' || data.reasonCode?.includes('429')) {
     lines.push('Review halted before completion due to API rate limiting (HTTP 429). See alert above for recovery steps.');
+  } else if (data.reasonCode === 'provider_http_503' || data.reasonCode?.includes('503')) {
+    lines.push('Review halted because Google Gemini servers were temporarily overloaded (HTTP 503). See alert above to retry.');
   } else if (data.reasonCode === 'request_budget_exceeded' || data.reasonCode === 'all_files_exceeded_budgets') {
     lines.push('Review skipped because the PR changes exceeded the configured token or size limits.');
   } else if (data.reviewedFiles === 0) {

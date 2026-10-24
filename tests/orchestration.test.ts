@@ -313,6 +313,43 @@ describe('End-to-end review orchestration', () => {
     expect(outcome.publishedFindings).toBe(1);
   });
 
+  it('falls back to full review when user comments /review updated or non-file argument', async () => {
+    const mockClient = new MockGitHubClient();
+    mockClient.prDetails = {
+      ...mockClient.prDetails,
+      eventName: 'issue_comment',
+      action: 'created',
+      mayTriggerReview: true,
+      commentBody: '/review updated',
+      commentId: 104,
+      targetFile: 'updated',
+    };
+
+    mockClient.files = [
+      {
+        filename: 'src/user.ts',
+        status: 'modified',
+        patch: BUGGY_PATCH,
+        changes: 3,
+        additions: 3,
+        deletions: 1,
+      },
+      {
+        filename: 'src/math.ts',
+        status: 'modified',
+        patch: CLEAN_PATCH,
+        changes: 2,
+        additions: 2,
+        deletions: 0,
+      },
+    ];
+
+    const fakeProvider = new FakeProvider();
+    const outcome = await runReview(mockClient, fakeProvider);
+    expect(outcome.status).toBe('completed');
+    expect(outcome.reviewedFiles).toBe(2); // Gracefully reviews both files!
+  });
+
   it('skips non-trigger comments safely (e.g. "looks good to me")', async () => {
     const mockClient = new MockGitHubClient();
     mockClient.prDetails = {

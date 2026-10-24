@@ -47142,7 +47142,19 @@ function formatSummaryComment(data) {
     lines.push(">     max-input-bytes: 200000");
     lines.push(">   ```");
     lines.push("");
-  } else if (data.reasonCode && !data.reasonCode.includes("429") && data.reasonCode !== "invalid_findings_dropped" && data.reasonCode !== "static_reports_skipped" && data.reasonCode !== "publication_incomplete" && data.reasonCode !== "stale_head_discarded" && data.status !== "completed") {
+  } else if (data.reasonCode === "provider_http_503" || data.reasonCode?.includes("503")) {
+    lines.push("> [!WARNING]");
+    lines.push("> ### \u26A0\uFE0F Gemini Model Temporarily Overloaded (HTTP 503)");
+    lines.push("> Google Gemini servers are temporarily experiencing high traffic or capacity limits.");
+    lines.push(">");
+    lines.push("> **Why this happens:**");
+    lines.push("> - Google Gemini occasionally returns HTTP 503 during momentary server-side traffic spikes.");
+    lines.push("> - This is a temporary upstream condition from Google, not an issue with your code.");
+    lines.push(">");
+    lines.push("> **How to resume:**");
+    lines.push("> - Wait **15 to 30 seconds** and comment `/review` on this PR to re-trigger.");
+    lines.push("");
+  } else if (data.reasonCode && !data.reasonCode.includes("429") && !data.reasonCode.includes("503") && data.reasonCode !== "invalid_findings_dropped" && data.reasonCode !== "static_reports_skipped" && data.reasonCode !== "publication_incomplete" && data.reasonCode !== "stale_head_discarded" && data.status !== "completed") {
     lines.push("> [!WARNING]");
     lines.push(`> ### \u26A0\uFE0F AI Provider Service Notice (\`${data.reasonCode}\`)`);
     lines.push("> The AI provider encountered an issue while generating the review.");
@@ -47164,6 +47176,8 @@ function formatSummaryComment(data) {
     lines.push(sanitizeFindingContent(data.overview.trim()));
   } else if (data.reasonCode === "provider_http_429" || data.reasonCode?.includes("429")) {
     lines.push("Review halted before completion due to API rate limiting (HTTP 429). See alert above for recovery steps.");
+  } else if (data.reasonCode === "provider_http_503" || data.reasonCode?.includes("503")) {
+    lines.push("Review halted because Google Gemini servers were temporarily overloaded (HTTP 503). See alert above to retry.");
   } else if (data.reasonCode === "request_budget_exceeded" || data.reasonCode === "all_files_exceeded_budgets") {
     lines.push("Review skipped because the PR changes exceeded the configured token or size limits.");
   } else if (data.reviewedFiles === 0) {
@@ -47548,7 +47562,7 @@ async function runReview(customClient, customProvider) {
     SafeLogger.info(`Starting AI code review for PR #${prDetails.pullNumber} on ${prDetails.owner}/${prDetails.repo}`);
     if (prDetails.eventName === "issue_comment") {
       const comment = (prDetails.commentBody || "").trim().toLowerCase();
-      const isReviewTrigger = /^\/(?:review|ai-review|recheck)(?:\s+\S+)?$/.test(comment);
+      const isReviewTrigger = /^\/(?:review|ai-review|recheck)(?:\s+.*)?$/i.test(comment);
       if (!isReviewTrigger) {
         status = "skipped";
         reasonCode = "comment_not_a_trigger";
@@ -47614,10 +47628,12 @@ async function runReview(customClient, customProvider) {
     const recordExclusion = (reason) => {
       excludedReasons[reason] = (excludedReasons[reason] || 0) + 1;
     };
+    const isTargetFileInPR = prDetails.targetFile && ghFiles.some((f) => f.filename === prDetails.targetFile);
+    const effectiveTargetFile = isTargetFileInPR ? prDetails.targetFile : void 0;
     for (const ghFile of ghFiles) {
       const filePath = ghFile.filename;
-      if (prDetails.targetFile) {
-        if (filePath !== prDetails.targetFile) {
+      if (effectiveTargetFile) {
+        if (filePath !== effectiveTargetFile) {
           continue;
         }
       }
