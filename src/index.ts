@@ -6,7 +6,7 @@ import { GitHubClient, OctokitGitHubClient } from './github/client.js';
 import { PathExclusionFilter } from './security/exclusions.js';
 import { parseUnifiedPatch } from './github/diff.js';
 import { budgetFiles } from './review/budget.js';
-import { AIProvider, Finding, ParsedPatchFile, ReviewOutcome, ReviewStatus } from './types.js';
+import { AIProvider, Finding, ParsedPatchFile, ReviewInput, ReviewOutcome, ReviewStatus } from './types.js';
 import { createProvider } from './providers/factory.js';
 import { HttpProvider } from './providers/http.js';
 import { validateAndFilterFindings } from './review/validate.js';
@@ -242,6 +242,10 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
     await reactToReviewStart(client, prDetails);
 
+    if (config.customInstructions) {
+      SafeLogger.info('Applying custom review guidelines / instructions.');
+    }
+
     SafeLogger.info(`Sending ${reviewedFilesCount} file(s) to ${effectiveProvider} (${config.model || 'default'})...`);
 
     // 6. Provider execution with 120-second timeout (gives reasoning models like gemini-3.8-flash sufficient time)
@@ -251,10 +255,11 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     let rawFindings: Finding[] = [];
     let aiSummary: string | undefined;
     try {
-      const reviewInput = {
+      const reviewInput: ReviewInput = {
         files: budget.includedFiles.map((f) => ({ path: f.path, patch: f.patch })),
         maxFindings: config.maxFindings,
         language: config.reviewLanguage,
+        customInstructions: config.customInstructions,
       };
 
       const result = await provider.review(reviewInput, abortController.signal);

@@ -82,6 +82,10 @@ inputs:
     description: 'Thinking / reasoning effort level for supported models: minimal, low, medium, high (default: medium)'
     required: false
     default: 'medium'
+  custom-instructions:
+    description: 'Custom review guidelines, rules, or instructions. Can be inline text or a path to a file in the repository (e.g. docs/rules.md, .github/ai-review.md). Defaults to .github/ai-review.md if that file exists in the repository.'
+    required: false
+    default: ''
 
 outputs:
   status:

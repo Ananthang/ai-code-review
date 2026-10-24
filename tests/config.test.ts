@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { LIMIT_CEILINGS, parseConfig } from '../src/config.js';
+import { LIMIT_CEILINGS, parseConfig, resolveCustomInstructions } from '../src/config.js';
 
 describe('Configuration parsing & limit ceilings', () => {
   it('parses valid configuration with defaults', () => {
@@ -103,5 +106,69 @@ describe('Configuration parsing & limit ceilings', () => {
         mode: 'approve' as any,
       })
     ).toThrow(/Only "comment" mode is supported/);
+  });
+
+  describe('Custom instructions resolution', () => {
+    it('returns direct raw text when inline string is provided', () => {
+      const instructions = resolveCustomInstructions('- Ensure all DB queries are parameterized');
+      expect(instructions).toBe('- Ensure all DB queries are parameterized');
+    });
+
+    it('returns direct raw text for multiline instructions', () => {
+      const multiline = `- Check for XSS\n- Check for SQL injection\n- Flag console.log`;
+      const instructions = resolveCustomInstructions(multiline);
+      expect(instructions).toBe(multiline);
+    });
+
+    it('loads custom instructions from a project file outside .github', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-review-test-'));
+      const rulesDir = path.join(tmpDir, 'docs', 'rules');
+      fs.mkdirSync(rulesDir, { recursive: true });
+      const ruleFilePath = path.join(rulesDir, 'team-standards.md');
+      fs.writeFileSync(ruleFilePath, 'Enforce strict schema validation on all API endpoints');
+
+      const instructions = resolveCustomInstructions('docs/rules/team-standards.md', tmpDir);
+      expect(instructions).toBe('Enforce strict schema validation on all API endpoints');
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('auto-detects .github/ai-review.md when no explicit input is provided', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-review-test-'));
+      const ghDir = path.join(tmpDir, '.github');
+      fs.mkdirSync(ghDir, { recursive: true });
+      fs.writeFileSync(path.join(ghDir, 'ai-review.md'), 'Default repository review rules');
+
+      const instructions = resolveCustomInstructions('', tmpDir);
+      expect(instructions).toBe('Default repository review rules');
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('rejects directory traversal attempts outside the workspace', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-review-test-'));
+      const outsideFile = path.join(os.tmpdir(), 'outside-secret.txt');
+      fs.writeFileSync(outsideFile, 'secret-data');
+
+      // Attempting to read outside workspace via relative path
+      const instructions = resolveCustomInstructions('../outside-secret.txt', tmpDir);
+      // Because it escapes workspace, it should not read the file contents, treating it as raw text
+      expect(instructions).toBe('../outside-secret.txt');
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(outsideFile, { force: true });
+    });
+
+    it('returns undefined when explicitly disabled with none or off', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-review-test-'));
+      const ghDir = path.join(tmpDir, '.github');
+      fs.mkdirSync(ghDir, { recursive: true });
+      fs.writeFileSync(path.join(ghDir, 'ai-review.md'), 'Default rules');
+
+      expect(resolveCustomInstructions('none', tmpDir)).toBeUndefined();
+      expect(resolveCustomInstructions('off', tmpDir)).toBeUndefined();
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
   });
 });

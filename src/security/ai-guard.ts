@@ -21,11 +21,18 @@ export function isUnsafeReviewOutput(text: string): boolean {
     /\b(?:here is|here's)\s+(?:your |a |an )?(?:poem|joke|story|recipe)\b/i.test(text);
 }
 
-export function assertReviewOnlyInput(input: { language: string; files: ReadonlyArray<{ path: string; patch: string }> }): void {
+export function assertReviewOnlyInput(input: {
+  language: string;
+  files: ReadonlyArray<{ path: string; patch: string }>;
+  customInstructions?: string;
+}): void {
   if (!/^[\p{L}\p{M} -]{1,64}$/u.test(input.language) || hasPromptInjection(input.language)) {
     throw new Error('ai_guard_invalid_language');
   }
   if (input.files.some((file) => hasPromptInjection(file.path + '\n' + file.patch))) {
+    throw new Error('ai_guard_prompt_injection');
+  }
+  if (input.customInstructions && hasPromptInjection(input.customInstructions)) {
     throw new Error('ai_guard_prompt_injection');
   }
 }

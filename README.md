@@ -67,6 +67,9 @@ For local Ollama, use the separate instructions in [PROVIDERS.md](docs/PROVIDERS
 | `exclude-patterns` | Additional newline/comma-separated globs; secret exclusions remain mandatory |
 | `mode` | `comment` only |
 | `static-report-paths` | Explicit paths, no glob expansion; SHA-wrapped JSON reports |
+| `thinking-level` | `medium`; reasoning depth: `minimal`, `low`, `medium`, `high` (for Gemini 3 & 2.5) |
+| `fail-on-error` | `false`; set to `true` to fail the GitHub Actions step if the AI review fails |
+| `custom-instructions` | Optional; inline rules, or path to a file in the project (defaults to auto-detecting `.github/ai-review.md`) |
 
 Only included added lines can receive findings. Fork/draft PRs are skipped. Prompt framing and exclusions reduce risk but cannot eliminate injection, secret exposure, or false positives. No reviewed code is executed by the action itself. No approvals or change requests are submitted.
 
@@ -75,6 +78,63 @@ The included workflow also handles `/review` and `/review exact/path.ts` comment
 When an eligible review starts, the action adds 👀 to the triggering `/review` comment. On the first automatic review (no existing bot-owned review summary), it adds 👀 to the PR description instead. Skipped reviews do not receive a start reaction, and reaction permission failures do not stop the review. The reaction records that review started; it remains if the provider later fails. The existing 🚀 comment reaction is retained after the publication flow completes.
 
 Outputs include `status`, `reason-code`, `reviewed-files`, `published-findings`, and token counts where available. Skips/failures may only appear in action outputs and logs; always inspect status before interpreting an old PR summary.
+
+## Custom Review Instructions & Guidelines ("Review Skills")
+
+Client repositories can configure their own custom review rules, architectural guidelines, or team standards to steer what the AI model checks for.
+
+There are three ways to supply custom guidelines:
+
+### 1. Auto-detected Repository File (Default: `.github/ai-review.md`)
+Simply add a markdown file at `.github/ai-review.md` (or `.github/review-instructions.md`) in your repository. The action automatically detects and loads it on every review:
+
+```markdown
+# Repository Review Guidelines
+
+## Architecture & Framework Rules
+- Enforce Next.js App Router and Server Actions best practices.
+- Ensure all API route request bodies are validated using Zod schemas before processing.
+- Verify user session authentication before executing mutations.
+
+## Production Hygiene & Code Quality
+- Flag any leftover \`console.log\` or \`debugger\` statements in backend routes (\`app/api/...\`).
+- Disallow \`any\` in TypeScript; require explicit types or \`unknown\` with type narrowing.
+- Ensure SQL queries or ORM calls include proper error handling.
+```
+
+### 2. External File Anywhere in the Project
+If your team keeps documentation or review rules in another directory (outside `.github`), specify the relative path in `custom-instructions`:
+
+```yaml
+- uses: Ananthang/ai-code-review@v1
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    provider-api-key: ${{ secrets.GEMINI_API_KEY }}
+    allow-external-provider: 'true'
+    custom-instructions: 'docs/architecture/review-guidelines.md'
+    # Or 'standards/code-quality.txt', 'rules/backend-rules.md', etc.
+```
+
+The action validates that the path stays safely within your repository workspace and loads its contents.
+
+### 3. Inline in Workflow YAML
+You can also write custom guidelines directly inside your workflow file:
+
+```yaml
+- uses: Ananthang/ai-code-review@v1
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    provider-api-key: ${{ secrets.GEMINI_API_KEY }}
+    allow-external-provider: 'true'
+    custom-instructions: |
+      - Flag all \`console.log\` statements in backend API routes.
+      - Ensure all external API fetch calls specify timeouts.
+      - Reject hardcoded secrets or fallback tokens in code.
+```
+
+> [!NOTE]
+> To temporarily disable custom rules when a `.github/ai-review.md` exists, set `custom-instructions: 'none'` or `'off'`.
+
 
 ## Static reports
 

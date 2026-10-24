@@ -12,6 +12,7 @@ export interface ReviewInput {
   files: ReadonlyArray<{ path: string; patch: string }>;
   maxFindings: number;
   language: string;
+  customInstructions?: string;
 }
 
 export interface ProviderResult {
@@ -80,4 +81,5 @@ export interface Config {
   staticReportPaths: string[];
   failOnError: boolean;
   thinkingLevel: ThinkingLevel;
+  customInstructions?: string;
 }

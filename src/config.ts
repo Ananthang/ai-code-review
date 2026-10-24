@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import * as core from '@actions/core';
 import { z } from 'zod';
 import { Config } from './types.js';
@@ -38,6 +40,7 @@ export const ConfigSchema = z.object({
   staticReportPaths: z.array(z.string()).default([]),
   failOnError: z.boolean().default(false),
   thinkingLevel: z.enum(['minimal', 'low', 'medium', 'high']).default('medium'),
+  customInstructions: z.string().optional(),
 });
 
 function parseSplitLines(raw: string): string[] {
@@ -63,7 +66,63 @@ function parseNumberInput(raw: string | number | undefined, defaultValue: number
   return /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : Number.NaN;
 }
 
-export function parseConfig(overrides?: Partial<Config>): Config {
+export function resolveCustomInstructions(
+  rawInput?: string,
+  workspaceRoot: string = process.env.GITHUB_WORKSPACE ? path.resolve(process.env.GITHUB_WORKSPACE) : process.cwd()
+): string | undefined {
+  const input = rawInput?.trim();
+
+  // Explicit opt-out via configuration
+  if (input && (input.toLowerCase() === 'none' || input.toLowerCase() === 'off')) {
+    return undefined;
+  }
+
+  // 1. If explicit input was provided:
+  if (input) {
+    // Check if input looks like a potential relative/workspace file path (single line, no newlines, reasonable length)
+    if (!input.includes('\n') && input.length < 260) {
+      const resolvedPath = path.resolve(workspaceRoot, input);
+      // Ensure path stays within workspace boundaries for security
+      if (resolvedPath.startsWith(workspaceRoot) && fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isFile()) {
+        try {
+          const content = fs.readFileSync(resolvedPath, 'utf8').trim();
+          core.info(`Loaded custom review instructions from file: ${input}`);
+          return content.slice(0, 8192); // Bound to 8 KiB
+        } catch {
+          core.warning(`Failed reading custom instructions file: ${input}`);
+        }
+      } else if (input.endsWith('.md') || input.endsWith('.txt')) {
+        core.warning(`Custom instructions file not found at "${input}". Treating input as raw text.`);
+      }
+    }
+    // Return direct raw text instructions (capped at 8 KiB)
+    return input.slice(0, 8192);
+  }
+
+  // 2. If no explicit input was provided, auto-detect default convention files in the repository:
+  const defaultFileCandidates = [
+    path.join(workspaceRoot, '.github', 'ai-review.md'),
+    path.join(workspaceRoot, '.github', 'review-instructions.md'),
+    path.join(workspaceRoot, '.github', 'ai-review.txt'),
+  ];
+
+  for (const candidate of defaultFileCandidates) {
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      try {
+        const content = fs.readFileSync(candidate, 'utf8').trim();
+        const rel = path.relative(workspaceRoot, candidate);
+        core.info(`Loaded custom review instructions from repository file: ${rel}`);
+        return content.slice(0, 8192);
+      } catch {
+        // Fallback to next candidate
+      }
+    }
+  }
+
+  return undefined;
+}
+
+export function parseConfig(overrides?: Partial<Config>, workspaceRoot?: string): Config {
   const githubToken = overrides?.githubToken ?? (core.getInput('github-token') || process.env.GITHUB_TOKEN || '');
   const provider = (overrides?.provider ?? (core.getInput('provider') || 'gemini')).trim().toLowerCase();
   const model = (
@@ -112,6 +171,11 @@ export function parseConfig(overrides?: Partial<Config>): Config {
     ? (rawThinkingLevel as 'minimal' | 'low' | 'medium' | 'high')
     : 'medium';
 
+  const rawCustomInstructions = overrides?.customInstructions !== undefined
+    ? overrides.customInstructions
+    : core.getInput('custom-instructions');
+  const customInstructions = resolveCustomInstructions(rawCustomInstructions, workspaceRoot);
+
   // Mask sensitive values
   if (providerApiKey) {
     core.setSecret(providerApiKey);
@@ -140,6 +204,7 @@ export function parseConfig(overrides?: Partial<Config>): Config {
     staticReportPaths,
     failOnError,
     thinkingLevel,
+    customInstructions,
   };
 
   const parsed = ConfigSchema.safeParse(rawConfig);
