@@ -51,9 +51,9 @@ inputs:
     required: false
     default: '4000'
   max-requests:
-    description: 'Maximum provider requests per run (default 1; set 2 to permit one configured fallback)'
+    description: 'Maximum provider requests per run (default 2 to permit one configured fallback)'
     required: false
-    default: '1'
+    default: '2'
   max-findings:
     description: 'Maximum inline findings to publish per run'
     required: false

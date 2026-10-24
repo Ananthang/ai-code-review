@@ -47963,17 +47963,20 @@ async function runReview(customClient, customProvider) {
       const isAbort = providerErr instanceof Error && (providerErr.name === "AbortError" || providerErr.message.includes("aborted"));
       let code = isAbort ? "timeout" : providerErr instanceof Error && providerErr.message ? providerErr.message : "provider_request_failed";
       const isCapacityError = code === "provider_http_429" || code.includes("429") || code === "provider_http_503" || code.includes("503");
-      if (isCapacityError && config2.fallbackModel && config2.fallbackModel !== config2.model && !customProvider && config2.maxRequests >= 2) {
+      const cleanPrimary = config2.model.replace(/^models\//, "").trim();
+      const cleanFallback = (config2.fallbackModel || "").replace(/^models\//, "").trim();
+      if (isCapacityError && cleanFallback && cleanFallback !== cleanPrimary && !customProvider && config2.maxRequests >= 2) {
+        const fallbackTargetModel = config2.fallbackModel;
         const errorLabel = code.includes("503") ? "overloaded (503)" : "rate limited (429)";
         SafeLogger.warning(
-          `Primary model "${config2.model}" ${errorLabel}. Attempting configured fallback model: "${config2.fallbackModel}"...`
+          `Primary model "${config2.model}" ${errorLabel}. Attempting configured fallback model: "${fallbackTargetModel}"...`
         );
         const fallbackAbortController = new AbortController();
         const fallbackTimeout = setTimeout(() => fallbackAbortController.abort(), 12e4);
         try {
           const fallbackProvider = createProvider({
             ...config2,
-            model: config2.fallbackModel
+            model: fallbackTargetModel
           });
           const reviewInput = {
             files: budget.includedFiles.map((f) => ({ path: f.path, patch: f.patch })),
@@ -47988,7 +47991,7 @@ async function runReview(customClient, customProvider) {
           aiSummary = fbResult.summary;
           if (fbResult.usage?.inputTokens) inputTokens = fbResult.usage.inputTokens;
           if (fbResult.usage?.outputTokens) outputTokens = fbResult.usage.outputTokens;
-          effectiveModel = config2.fallbackModel;
+          effectiveModel = fallbackTargetModel;
           fallbackFromModel = config2.model;
           fallbackReason = code;
           reviewSucceeded = true;
@@ -47996,7 +47999,7 @@ async function runReview(customClient, customProvider) {
           clearTimeout(fallbackTimeout);
           const isFbAbort = fallbackErr instanceof Error && (fallbackErr.name === "AbortError" || fallbackErr.message.includes("aborted"));
           code = isFbAbort ? "timeout" : fallbackErr instanceof Error && fallbackErr.message ? fallbackErr.message : "provider_request_failed";
-          SafeLogger.error(`Fallback model "${config2.fallbackModel}" also failed (${code}).`);
+          SafeLogger.error(`Fallback model "${fallbackTargetModel}" also failed (${code}).`);
         }
       }
       if (!reviewSucceeded) {

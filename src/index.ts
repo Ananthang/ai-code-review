@@ -310,23 +310,27 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         code === 'provider_http_503' ||
         code.includes('503');
 
+      const cleanPrimary = config.model.replace(/^models\//, '').trim();
+      const cleanFallback = (config.fallbackModel || '').replace(/^models\//, '').trim();
+
       if (
         isCapacityError &&
-        config.fallbackModel &&
-        config.fallbackModel !== config.model &&
+        cleanFallback &&
+        cleanFallback !== cleanPrimary &&
         !customProvider &&
         config.maxRequests >= 2
       ) {
+        const fallbackTargetModel = config.fallbackModel!;
         const errorLabel = code.includes('503') ? 'overloaded (503)' : 'rate limited (429)';
         SafeLogger.warning(
-          `Primary model "${config.model}" ${errorLabel}. Attempting configured fallback model: "${config.fallbackModel}"...`
+          `Primary model "${config.model}" ${errorLabel}. Attempting configured fallback model: "${fallbackTargetModel}"...`
         );
         const fallbackAbortController = new AbortController();
         const fallbackTimeout = setTimeout(() => fallbackAbortController.abort(), 120000);
         try {
           const fallbackProvider = createProvider({
             ...config,
-            model: config.fallbackModel,
+            model: fallbackTargetModel,
           });
           const reviewInput: ReviewInput = {
             files: budget.includedFiles.map((f) => ({ path: f.path, patch: f.patch })),
@@ -341,7 +345,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
           aiSummary = fbResult.summary;
           if (fbResult.usage?.inputTokens) inputTokens = fbResult.usage.inputTokens;
           if (fbResult.usage?.outputTokens) outputTokens = fbResult.usage.outputTokens;
-          effectiveModel = config.fallbackModel;
+          effectiveModel = fallbackTargetModel;
           fallbackFromModel = config.model;
           fallbackReason = code;
           reviewSucceeded = true;
@@ -355,7 +359,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
             : fallbackErr instanceof Error && fallbackErr.message
               ? fallbackErr.message
               : 'provider_request_failed';
-          SafeLogger.error(`Fallback model "${config.fallbackModel}" also failed (${code}).`);
+          SafeLogger.error(`Fallback model "${fallbackTargetModel}" also failed (${code}).`);
         }
       }
 
