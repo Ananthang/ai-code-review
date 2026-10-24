@@ -37,11 +37,22 @@ export class HttpProvider implements AIProvider {
     const model = this.options.model;
     const limit = this.options.maxOutputTokens ?? 4000;
     switch (this.name) {
-      case 'gemini': return {
-        systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json', maxOutputTokens: limit },
-      };
+      case 'gemini': {
+        const generationConfig: Record<string, unknown> = {
+          responseMimeType: 'application/json',
+          maxOutputTokens: limit,
+        };
+        if (model.includes('gemini-3')) {
+          generationConfig.thinkingConfig = { thinkingLevel: 'LOW' };
+        } else if (model.includes('gemini-2.5')) {
+          generationConfig.thinkingConfig = { thinkingBudget: 1024 };
+        }
+        return {
+          systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig,
+        };
+      }
       case 'openai': return {
         model, instructions: SYSTEM_INSTRUCTION, input: prompt, store: false,
         max_output_tokens: limit, text: { format: { type: 'json_object' } },

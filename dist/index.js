@@ -46886,12 +46886,22 @@ var HttpProvider = class {
     const model = this.options.model;
     const limit = this.options.maxOutputTokens ?? 4e3;
     switch (this.name) {
-      case "gemini":
+      case "gemini": {
+        const generationConfig = {
+          responseMimeType: "application/json",
+          maxOutputTokens: limit
+        };
+        if (model.includes("gemini-3")) {
+          generationConfig.thinkingConfig = { thinkingLevel: "LOW" };
+        } else if (model.includes("gemini-2.5")) {
+          generationConfig.thinkingConfig = { thinkingBudget: 1024 };
+        }
         return {
           systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
           contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json", maxOutputTokens: limit }
+          generationConfig
         };
+      }
       case "openai":
         return {
           model,
