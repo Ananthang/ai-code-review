@@ -37,6 +37,7 @@ export const ConfigSchema = z.object({
   }),
   staticReportPaths: z.array(z.string()).default([]),
   failOnError: z.boolean().default(false),
+  thinkingLevel: z.enum(['minimal', 'low', 'medium', 'high']).default('medium'),
 });
 
 function parseSplitLines(raw: string): string[] {
@@ -99,6 +100,17 @@ export function parseConfig(overrides?: Partial<Config>): Config {
   const failOnError = overrides?.failOnError !== undefined
     ? overrides.failOnError
     : parseBooleanInput(core.getInput('fail-on-error'), false);
+  const rawThinkingLevel = (
+    overrides?.thinkingLevel ??
+    (core.getInput('thinking-level') ||
+      core.getInput('thinking-effort') ||
+      core.getInput('effort') ||
+      'medium')
+  ).trim().toLowerCase();
+
+  const thinkingLevel = ['minimal', 'low', 'medium', 'high'].includes(rawThinkingLevel)
+    ? (rawThinkingLevel as 'minimal' | 'low' | 'medium' | 'high')
+    : 'medium';
 
   // Mask sensitive values
   if (providerApiKey) {
@@ -127,6 +139,7 @@ export function parseConfig(overrides?: Partial<Config>): Config {
     mode: modeRaw,
     staticReportPaths,
     failOnError,
+    thinkingLevel,
   };
 
   const parsed = ConfigSchema.safeParse(rawConfig);

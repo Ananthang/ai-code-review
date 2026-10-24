@@ -58,6 +58,8 @@ export interface DiffSnapshot {
   isComplete: boolean;
 }
 
+export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
+
 export interface Config {
   githubToken: string;
   provider: string;
@@ -77,4 +79,5 @@ export interface Config {
   mode: 'comment';
   staticReportPaths: string[];
   failOnError: boolean;
+  thinkingLevel: ThinkingLevel;
 }

@@ -9,5 +9,6 @@ export function createProvider(config: Config) {
     apiKey: config.providerApiKey, model: config.model, maxOutputTokens: config.maxOutputTokens,
     maxInputBytes: config.maxInputBytes, maxInputTokens: config.maxInputTokens,
     baseUrl: config.providerBaseUrl, allowExternalProvider: config.allowExternalProvider,
+    thinkingLevel: config.thinkingLevel,
   });
 }

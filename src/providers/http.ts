@@ -3,6 +3,7 @@ import { buildReviewPrompt, SYSTEM_INSTRUCTION } from '../review/prompt.js';
 import { ProviderResponseSchema } from '../review/validate.js';
 
 export type ProviderName = 'gemini' | 'openai' | 'anthropic' | 'ollama';
+export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
 export interface HttpProviderOptions {
   apiKey: string;
   model: string;
@@ -11,6 +12,7 @@ export interface HttpProviderOptions {
   maxInputTokens?: number;
   baseUrl?: string;
   allowExternalProvider?: boolean;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export function ollamaEndpoint(baseUrl = 'http://127.0.0.1:11434', allowExternal = false): string {
@@ -42,10 +44,27 @@ export class HttpProvider implements AIProvider {
           responseMimeType: 'application/json',
           maxOutputTokens: limit,
         };
+        const level = (this.options.thinkingLevel || 'medium').toLowerCase();
+        const levelMap: Record<string, string> = {
+          minimal: 'MINIMAL',
+          low: 'LOW',
+          medium: 'MEDIUM',
+          high: 'HIGH',
+        };
+        const budgetMap: Record<string, number> = {
+          minimal: 512,
+          low: 1024,
+          medium: 2048,
+          high: 8192,
+        };
         if (model.includes('gemini-3')) {
-          generationConfig.thinkingConfig = { thinkingLevel: 'LOW' };
+          generationConfig.thinkingConfig = {
+            thinkingLevel: levelMap[level] || 'MEDIUM',
+          };
         } else if (model.includes('gemini-2.5')) {
-          generationConfig.thinkingConfig = { thinkingBudget: 1024 };
+          generationConfig.thinkingConfig = {
+            thinkingBudget: budgetMap[level] || 2048,
+          };
         }
         return {
           systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },

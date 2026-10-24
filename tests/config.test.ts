@@ -16,6 +16,7 @@ describe('Configuration parsing & limit ceilings', () => {
     expect(config.maxFindings).toBe(10);
     expect(config.allowExternalProvider).toBe(false);
     expect(config.mode).toBe('comment');
+    expect(config.thinkingLevel).toBe('medium');
   });
 
   it('throws when model is missing from all inputs and env vars', () => {

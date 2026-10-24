@@ -42173,7 +42173,8 @@ var ConfigSchema = external_exports.object({
     message: 'Only "comment" mode is supported (merge gating and approval are excluded)'
   }),
   staticReportPaths: external_exports.array(external_exports.string()).default([]),
-  failOnError: external_exports.boolean().default(false)
+  failOnError: external_exports.boolean().default(false),
+  thinkingLevel: external_exports.enum(["minimal", "low", "medium", "high"]).default("medium")
 });
 function parseSplitLines(raw) {
   if (!raw || !raw.trim()) return [];
@@ -42212,6 +42213,8 @@ function parseConfig(overrides) {
   const excludePatterns = overrides?.excludePatterns ?? parseSplitLines(getInput("exclude-patterns"));
   const staticReportPaths = overrides?.staticReportPaths ?? parseSplitLines(getInput("static-report-paths"));
   const failOnError = overrides?.failOnError !== void 0 ? overrides.failOnError : parseBooleanInput(getInput("fail-on-error"), false);
+  const rawThinkingLevel = (overrides?.thinkingLevel ?? (getInput("thinking-level") || getInput("thinking-effort") || getInput("effort") || "medium")).trim().toLowerCase();
+  const thinkingLevel = ["minimal", "low", "medium", "high"].includes(rawThinkingLevel) ? rawThinkingLevel : "medium";
   if (providerApiKey) {
     setSecret(providerApiKey);
   }
@@ -42236,7 +42239,8 @@ function parseConfig(overrides) {
     excludePatterns,
     mode: modeRaw,
     staticReportPaths,
-    failOnError
+    failOnError,
+    thinkingLevel
   };
   const parsed = ConfigSchema.safeParse(rawConfig);
   if (!parsed.success) {
@@ -46891,10 +46895,27 @@ var HttpProvider = class {
           responseMimeType: "application/json",
           maxOutputTokens: limit
         };
+        const level = (this.options.thinkingLevel || "medium").toLowerCase();
+        const levelMap = {
+          minimal: "MINIMAL",
+          low: "LOW",
+          medium: "MEDIUM",
+          high: "HIGH"
+        };
+        const budgetMap = {
+          minimal: 512,
+          low: 1024,
+          medium: 2048,
+          high: 8192
+        };
         if (model.includes("gemini-3")) {
-          generationConfig.thinkingConfig = { thinkingLevel: "LOW" };
+          generationConfig.thinkingConfig = {
+            thinkingLevel: levelMap[level] || "MEDIUM"
+          };
         } else if (model.includes("gemini-2.5")) {
-          generationConfig.thinkingConfig = { thinkingBudget: 1024 };
+          generationConfig.thinkingConfig = {
+            thinkingBudget: budgetMap[level] || 2048
+          };
         }
         return {
           systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
@@ -47091,7 +47112,8 @@ function createProvider(config2) {
     maxInputBytes: config2.maxInputBytes,
     maxInputTokens: config2.maxInputTokens,
     baseUrl: config2.providerBaseUrl,
-    allowExternalProvider: config2.allowExternalProvider
+    allowExternalProvider: config2.allowExternalProvider,
+    thinkingLevel: config2.thinkingLevel
   });
 }
 
