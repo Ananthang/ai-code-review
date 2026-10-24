@@ -159,6 +159,33 @@ describe('Configuration parsing & limit ceilings', () => {
       fs.rmSync(outsideFile, { force: true });
     });
 
+    it('loads custom instructions from multiple project files line-by-line or comma-separated', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-review-test-'));
+      fs.mkdirSync(path.join(tmpDir, 'rules'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'rules', 'sec.md'), 'Rule 1: No SQLi');
+      fs.writeFileSync(path.join(tmpDir, 'rules', 'style.md'), 'Rule 2: No any');
+
+      // 1. Line-by-line
+      const lineInput = `rules/sec.md\nrules/style.md`;
+      const combinedLine = resolveCustomInstructions(lineInput, tmpDir);
+      expect(combinedLine).toContain('### Guidelines from rules/sec.md:\nRule 1: No SQLi');
+      expect(combinedLine).toContain('### Guidelines from rules/style.md:\nRule 2: No any');
+
+      // 2. Comma-separated
+      const commaInput = `rules/sec.md, rules/style.md`;
+      const combinedComma = resolveCustomInstructions(commaInput, tmpDir);
+      expect(combinedComma).toContain('### Guidelines from rules/sec.md:\nRule 1: No SQLi');
+      expect(combinedComma).toContain('### Guidelines from rules/style.md:\nRule 2: No any');
+
+      // 3. Mixed files and inline bullet points
+      const mixedInput = `rules/sec.md\n- Flag console.log in API routes`;
+      const combinedMixed = resolveCustomInstructions(mixedInput, tmpDir);
+      expect(combinedMixed).toContain('### Guidelines from rules/sec.md:\nRule 1: No SQLi');
+      expect(combinedMixed).toContain('- Flag console.log in API routes');
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
     it('returns undefined when explicitly disabled with none or off', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-review-test-'));
       const ghDir = path.join(tmpDir, '.github');

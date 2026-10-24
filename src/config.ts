@@ -66,6 +66,21 @@ function parseNumberInput(raw: string | number | undefined, defaultValue: number
   return /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : Number.NaN;
 }
 
+function tryReadFile(filePath: string, workspaceRoot: string): string | undefined {
+  if (filePath.length >= 260) return undefined;
+  const resolvedPath = path.resolve(workspaceRoot, filePath);
+  // Ensure path stays within workspace boundaries for security
+  if (!resolvedPath.startsWith(workspaceRoot)) return undefined;
+  if (fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isFile()) {
+    try {
+      return fs.readFileSync(resolvedPath, 'utf8').trim();
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 export function resolveCustomInstructions(
   rawInput?: string,
   workspaceRoot: string = process.env.GITHUB_WORKSPACE ? path.resolve(process.env.GITHUB_WORKSPACE) : process.cwd()
@@ -79,24 +94,57 @@ export function resolveCustomInstructions(
 
   // 1. If explicit input was provided:
   if (input) {
-    // Check if input looks like a potential relative/workspace file path (single line, no newlines, reasonable length)
-    if (!input.includes('\n') && input.length < 260) {
-      const resolvedPath = path.resolve(workspaceRoot, input);
-      // Ensure path stays within workspace boundaries for security
-      if (resolvedPath.startsWith(workspaceRoot) && fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isFile()) {
-        try {
-          const content = fs.readFileSync(resolvedPath, 'utf8').trim();
-          core.info(`Loaded custom review instructions from file: ${input}`);
-          return content.slice(0, 8192); // Bound to 8 KiB
-        } catch {
-          core.warning(`Failed reading custom instructions file: ${input}`);
+    const lines = input.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+
+    // Expand comma-separated file paths if present on a line (e.g. "docs/a.md, docs/b.md")
+    const candidates: string[] = [];
+    for (const line of lines) {
+      if (line.includes(',') && !line.startsWith('-') && !line.startsWith('*') && !line.startsWith('#')) {
+        const parts = line.split(',').map((p) => p.trim()).filter((p) => p.length > 0);
+        if (parts.some((p) => tryReadFile(p, workspaceRoot) !== undefined)) {
+          candidates.push(...parts);
+          continue;
         }
-      } else if (input.endsWith('.md') || input.endsWith('.txt')) {
-        core.warning(`Custom instructions file not found at "${input}". Treating input as raw text.`);
+      }
+      candidates.push(line);
+    }
+
+    const loadedSections: Array<{ label?: string; content: string }> = [];
+    const inlineLines: string[] = [];
+
+    for (const item of candidates) {
+      const fileContent = tryReadFile(item, workspaceRoot);
+      if (fileContent !== undefined) {
+        if (inlineLines.length > 0) {
+          loadedSections.push({ content: inlineLines.join('\n') });
+          inlineLines.length = 0;
+        }
+        core.info(`Loaded custom review instructions from file: ${item}`);
+        loadedSections.push({ label: item, content: fileContent });
+      } else {
+        if (item.endsWith('.md') || item.endsWith('.txt')) {
+          core.warning(`Custom instructions file not found at "${item}". Treating input as raw text.`);
+        }
+        inlineLines.push(item);
       }
     }
-    // Return direct raw text instructions (capped at 8 KiB)
-    return input.slice(0, 8192);
+
+    if (inlineLines.length > 0) {
+      loadedSections.push({ content: inlineLines.join('\n') });
+    }
+
+    if (loadedSections.length === 1) {
+      return loadedSections[0].content.slice(0, 16384);
+    }
+
+    if (loadedSections.length > 1) {
+      const combined = loadedSections
+        .map((s) => (s.label ? `### Guidelines from ${s.label}:\n${s.content}` : s.content))
+        .join('\n\n');
+      return combined.slice(0, 16384); // Bound to 16 KiB
+    }
+
+    return input.slice(0, 16384);
   }
 
   // 2. If no explicit input was provided, auto-detect default convention files in the repository:
@@ -112,7 +160,7 @@ export function resolveCustomInstructions(
         const content = fs.readFileSync(candidate, 'utf8').trim();
         const rel = path.relative(workspaceRoot, candidate);
         core.info(`Loaded custom review instructions from repository file: ${rel}`);
-        return content.slice(0, 8192);
+        return content.slice(0, 16384);
       } catch {
         // Fallback to next candidate
       }

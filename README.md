@@ -102,20 +102,43 @@ Simply add a markdown file at `.github/ai-review.md` (or `.github/review-instruc
 - Ensure SQL queries or ORM calls include proper error handling.
 ```
 
-### 2. External File Anywhere in the Project
-If your team keeps documentation or review rules in another directory (outside `.github`), specify the relative path in `custom-instructions`:
+### 2. External File(s) Anywhere in the Project (Single or Multiple)
+If your team keeps documentation or review rules in other directories (outside `.github`), specify the relative path(s) in `custom-instructions`. You can provide a single file, or multiple files separated by newlines or commas:
 
+**Single file:**
 ```yaml
 - uses: Ananthang/ai-code-review@v1
   with:
-    github-token: ${{ secrets.GITHUB_TOKEN }}
-    provider-api-key: ${{ secrets.GEMINI_API_KEY }}
-    allow-external-provider: 'true'
     custom-instructions: 'docs/architecture/review-guidelines.md'
-    # Or 'standards/code-quality.txt', 'rules/backend-rules.md', etc.
 ```
 
-The action validates that the path stays safely within your repository workspace and loads its contents.
+**Multiple files (newline-separated or comma-separated):**
+```yaml
+- uses: Ananthang/ai-code-review@v1
+  with:
+    custom-instructions: |
+      docs/review-guidelines.md
+      standards/security-rules.md
+      rules/typescript-standards.md
+```
+Or:
+```yaml
+- uses: Ananthang/ai-code-review@v1
+  with:
+    custom-instructions: 'docs/review-guidelines.md, standards/security-rules.md'
+```
+
+**Mixing files with custom inline rules:**
+```yaml
+- uses: Ananthang/ai-code-review@v1
+  with:
+    custom-instructions: |
+      docs/review-guidelines.md
+      - Also ensure all external API calls include a 5-second timeout
+      - Flag any raw SQL queries without parameterized inputs
+```
+
+The action validates that all paths stay safely within your repository workspace, loads each file's contents, and combines them cleanly for the AI model.
 
 ### 3. Inline in Workflow YAML
 You can also write custom guidelines directly inside your workflow file:

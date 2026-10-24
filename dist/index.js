@@ -42201,27 +42201,67 @@ function parseNumberInput(raw, defaultValue) {
   if (!raw || !raw.trim()) return defaultValue;
   return /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : Number.NaN;
 }
+function tryReadFile(filePath, workspaceRoot) {
+  if (filePath.length >= 260) return void 0;
+  const resolvedPath = import_node_path.default.resolve(workspaceRoot, filePath);
+  if (!resolvedPath.startsWith(workspaceRoot)) return void 0;
+  if (import_node_fs.default.existsSync(resolvedPath) && import_node_fs.default.statSync(resolvedPath).isFile()) {
+    try {
+      return import_node_fs.default.readFileSync(resolvedPath, "utf8").trim();
+    } catch {
+      return void 0;
+    }
+  }
+  return void 0;
+}
 function resolveCustomInstructions(rawInput, workspaceRoot = process.env.GITHUB_WORKSPACE ? import_node_path.default.resolve(process.env.GITHUB_WORKSPACE) : process.cwd()) {
   const input2 = rawInput?.trim();
   if (input2 && (input2.toLowerCase() === "none" || input2.toLowerCase() === "off")) {
     return void 0;
   }
   if (input2) {
-    if (!input2.includes("\n") && input2.length < 260) {
-      const resolvedPath = import_node_path.default.resolve(workspaceRoot, input2);
-      if (resolvedPath.startsWith(workspaceRoot) && import_node_fs.default.existsSync(resolvedPath) && import_node_fs.default.statSync(resolvedPath).isFile()) {
-        try {
-          const content = import_node_fs.default.readFileSync(resolvedPath, "utf8").trim();
-          info(`Loaded custom review instructions from file: ${input2}`);
-          return content.slice(0, 8192);
-        } catch {
-          warning(`Failed reading custom instructions file: ${input2}`);
+    const lines = input2.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+    const candidates = [];
+    for (const line of lines) {
+      if (line.includes(",") && !line.startsWith("-") && !line.startsWith("*") && !line.startsWith("#")) {
+        const parts = line.split(",").map((p) => p.trim()).filter((p) => p.length > 0);
+        if (parts.some((p) => tryReadFile(p, workspaceRoot) !== void 0)) {
+          candidates.push(...parts);
+          continue;
         }
-      } else if (input2.endsWith(".md") || input2.endsWith(".txt")) {
-        warning(`Custom instructions file not found at "${input2}". Treating input as raw text.`);
+      }
+      candidates.push(line);
+    }
+    const loadedSections = [];
+    const inlineLines = [];
+    for (const item of candidates) {
+      const fileContent = tryReadFile(item, workspaceRoot);
+      if (fileContent !== void 0) {
+        if (inlineLines.length > 0) {
+          loadedSections.push({ content: inlineLines.join("\n") });
+          inlineLines.length = 0;
+        }
+        info(`Loaded custom review instructions from file: ${item}`);
+        loadedSections.push({ label: item, content: fileContent });
+      } else {
+        if (item.endsWith(".md") || item.endsWith(".txt")) {
+          warning(`Custom instructions file not found at "${item}". Treating input as raw text.`);
+        }
+        inlineLines.push(item);
       }
     }
-    return input2.slice(0, 8192);
+    if (inlineLines.length > 0) {
+      loadedSections.push({ content: inlineLines.join("\n") });
+    }
+    if (loadedSections.length === 1) {
+      return loadedSections[0].content.slice(0, 16384);
+    }
+    if (loadedSections.length > 1) {
+      const combined = loadedSections.map((s) => s.label ? `### Guidelines from ${s.label}:
+${s.content}` : s.content).join("\n\n");
+      return combined.slice(0, 16384);
+    }
+    return input2.slice(0, 16384);
   }
   const defaultFileCandidates = [
     import_node_path.default.join(workspaceRoot, ".github", "ai-review.md"),
@@ -42234,7 +42274,7 @@ function resolveCustomInstructions(rawInput, workspaceRoot = process.env.GITHUB_
         const content = import_node_fs.default.readFileSync(candidate, "utf8").trim();
         const rel = import_node_path.default.relative(workspaceRoot, candidate);
         info(`Loaded custom review instructions from repository file: ${rel}`);
-        return content.slice(0, 8192);
+        return content.slice(0, 16384);
       } catch {
       }
     }
