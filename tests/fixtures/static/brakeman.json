@@ -1,11 +1,14 @@
 {
-  "warnings": [
-    {
-      "warning_type": "SQL Injection",
-      "message": "Possible SQL injection",
-      "file": "app/controllers/posts_controller.rb",
-      "line": 28,
-      "confidence": "High"
-    }
-  ]
+  "headSha": "commit123",
+  "report": {
+    "warnings": [
+      {
+        "warning_type": "SQL Injection",
+        "message": "Possible SQL injection",
+        "file": "app/controllers/posts_controller.rb",
+        "line": 28,
+        "confidence": "High"
+      }
+    ]
+  }
 }

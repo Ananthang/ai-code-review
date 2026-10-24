@@ -55,6 +55,6 @@ export class SafeLogger {
     const summary = Object.entries(event)
       .map(([key, val]) => `${key}=${JSON.stringify(val)}`)
       .join(' ');
-    core.info(`[Metrics] ${summary}`);
+    core.info(this.sanitize(`[Metrics] ${summary}`));
   }
 }

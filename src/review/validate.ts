@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isUnsafeReviewOutput } from '../security/ai-guard.js';
 import { Finding, ParsedPatchFile, Severity } from '../types.js';
 
 export const FindingSchema = z.object({
@@ -7,12 +8,12 @@ export const FindingSchema = z.object({
   severity: z.enum(['critical', 'high', 'medium', 'low']),
   message: z.string().min(1).max(2000),
   recommendation: z.string().min(1).max(2000),
-});
+}).strict().refine((finding) => !isUnsafeReviewOutput(finding.message + '\n' + finding.recommendation), { message: 'AI guard rejected unsafe or off-task output' });
 
 export const ProviderResponseSchema = z.object({
-  summary: z.string().optional(),
-  findings: z.array(FindingSchema),
-});
+  summary: z.string().max(4000).optional(),
+  findings: z.array(FindingSchema).max(50),
+}).strict().refine((response) => !response.summary || !isUnsafeReviewOutput(response.summary), { message: 'AI guard rejected unsafe summary' });
 
 /**
  * Neutralizes @ mentions and dangerous HTML in AI-generated strings
@@ -22,6 +23,10 @@ export function sanitizeFindingContent(text: string): string {
   if (!text) return '';
 
   return text
+    // Remove URL schemes/autolinks and disable Markdown links, images and tables.
+    .replace(/(?:https?|ftp):\/\/[^\s<>]+/gi, '[external URL removed]')
+    .replace(/www\.[^\s<>]+/gi, '[external URL removed]')
+    .replace(/[\[\]`|]/g, (char) => `&#${char.charCodeAt(0)};`)
     // Neutralize GitHub mentions: @name -> @`name` or @\u200Bname
     .replace(/@([a-zA-Z0-9_\-]+)/g, '@\u200B$1')
     // Escape angle brackets to prevent raw HTML rendering

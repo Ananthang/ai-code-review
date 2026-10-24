@@ -70,3 +70,16 @@ describe('Diff and patch parser', () => {
     expect(parseUnifiedPatch('header-only.ts', 'diff --git a/a b/b\nindex 123..456\n').success).toBe(false);
   });
 });
+
+describe('Patch parser regression cases', () => {
+  it('rejects wrong old-side counts even when the new count matches', () => {
+    expect(parseUnifiedPatch('a.ts', '@@ -1,8 +1,1 @@\n-old\n+new').success).toBe(false);
+  });
+  it('handles a trailing newline without inventing a context line', () => {
+    expect(parseUnifiedPatch('a.ts', '@@ -0,0 +1,1 @@\n+new\n').success).toBe(true);
+  });
+  it('enforces zero-line hunks and rejects unknown prefixes', () => {
+    expect(parseUnifiedPatch('a.ts', '@@ -1,1 +1,0 @@\n-old\n+extra').success).toBe(false);
+    expect(parseUnifiedPatch('a.ts', '@@ -0,0 +1,1 @@\nINVALID\n+new').success).toBe(false);
+  });
+});

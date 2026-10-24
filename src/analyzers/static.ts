@@ -48,13 +48,20 @@ export function ingestStaticReports(options: IngestStaticReportsOptions): Static
   const skippedReports: Array<{ path: string; reason: string }> = [];
   let processedReports = 0;
 
-  for (const reportPath of options.reportPaths) {
+  for (const reportPath of options.reportPaths.slice(20)) {
+    skippedReports.push({ path: reportPath, reason: 'Report count limit exceeded' });
+  }
+  for (const reportPath of options.reportPaths.slice(0, 20)) {
     if (!fs.existsSync(reportPath)) {
       skippedReports.push({ path: reportPath, reason: 'File does not exist' });
       continue;
     }
 
-    const stat = fs.statSync(reportPath);
+    const stat = fs.lstatSync(reportPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      skippedReports.push({ path: reportPath, reason: 'Report must be a regular file' });
+      continue;
+    }
     if (stat.size > MAX_REPORT_FILE_BYTES) {
       skippedReports.push({
         path: reportPath,
@@ -72,19 +79,29 @@ export function ingestStaticReports(options: IngestStaticReportsOptions): Static
       continue;
     }
 
-    // Optional provenance / SHA check: if report has head_sha or metadata.headSha, it must match
-    const reportSha = parsed.head_sha || parsed.headSha || parsed.metadata?.head_sha || parsed.metadata?.headSha;
-    if (reportSha && reportSha !== options.expectedHeadSha) {
-      skippedReports.push({
-        path: reportPath,
-        reason: `Report head SHA mismatch (expected ${options.expectedHeadSha.slice(0, 7)}, got ${String(reportSha).slice(0, 7)})`,
-      });
+    // A SHA wrapper ties input to this revision; artifact origin must be verified by the workflow.
+    if (!parsed || parsed.headSha !== options.expectedHeadSha || !parsed.report) {
+      skippedReports.push({ path: reportPath, reason: 'Missing or mismatched report head SHA / report wrapper' });
       continue;
     }
-
-    const reportFindings = extractFindingsFromReport(parsed, options.filePatchMap);
-    allFindings.push(...reportFindings);
-    processedReports++;
+    let records = 0;
+    const pending: unknown[] = [parsed.report];
+    while (pending.length && records <= MAX_REPORT_RECORDS) {
+      const value = pending.pop();
+      if (Array.isArray(value)) { records += value.length; if (records <= MAX_REPORT_RECORDS) pending.push(...value); }
+      else if (value && typeof value === 'object') pending.push(...Object.values(value));
+    }
+    if (records > MAX_REPORT_RECORDS) {
+      skippedReports.push({ path: reportPath, reason: 'Report record limit exceeded' });
+      continue;
+    }
+    try {
+      const reportFindings = extractFindingsFromReport(parsed.report, options.filePatchMap);
+      allFindings.push(...reportFindings);
+      processedReports++;
+    } catch {
+      skippedReports.push({ path: reportPath, reason: 'Invalid report structure' });
+    }
   }
 
   return {
@@ -113,18 +130,8 @@ export function extractFindingsFromReport(
     let cleanPath = normalizeRepoPath(filePath);
     if (!cleanPath) return;
 
-    // Find matching patch file by exact or relative path match
-    let patchFile = filePatchMap.get(cleanPath);
-    if (!patchFile) {
-      for (const [p, pf] of filePatchMap.entries()) {
-        if (cleanPath.endsWith(p) || p.endsWith(cleanPath)) {
-          patchFile = pf;
-          cleanPath = p;
-          break;
-        }
-      }
-    }
-
+    // Suffix matching can attach a finding to an unrelated file.
+    const patchFile = filePatchMap.get(cleanPath);
     if (!patchFile) return;
     if (!patchFile.addedLines.has(line)) return;
 
@@ -140,7 +147,7 @@ export function extractFindingsFromReport(
   // 1. ESLint JSON format: [ { filePath: "...", messages: [ { line, ruleId, message, severity } ] } ]
   if (Array.isArray(data) && data.length > 0 && data[0]?.messages && data[0]?.filePath) {
     for (const fileItem of data.slice(0, MAX_REPORT_RECORDS)) {
-      const relPath = path.relative(process.cwd(), fileItem.filePath) || fileItem.filePath;
+      const relPath = path.isAbsolute(fileItem.filePath) ? path.relative(process.cwd(), fileItem.filePath) : fileItem.filePath;
       for (const msg of fileItem.messages || []) {
         if (typeof msg.line === 'number' && msg.line > 0) {
           maybeAdd(
@@ -182,7 +189,8 @@ export function extractFindingsFromReport(
         maybeAdd(
           warn.file,
           warn.line,
-          parseSeverity(warn.confidence === 'High' ? 'critical' : warn.confidence === 'Medium' ? 'high' : 'medium'),
+          'medium' // Confidence is not severity; conservative until rule-specific severity is available.
+          ,
           `[Brakeman: ${warn.warning_type}] ${warn.message}`,
           `Review security recommendation for ${warn.warning_type}.`
         );

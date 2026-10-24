@@ -1,13 +1,16 @@
-[
-  {
-    "filePath": "src/user.ts",
-    "messages": [
-      {
-        "ruleId": "no-unused-vars",
-        "severity": 2,
-        "message": "'unusedVar' is defined but never used.",
-        "line": 3
-      }
-    ]
-  }
-]
+{
+  "headSha": "commit123",
+  "report": [
+    {
+      "filePath": "src/user.ts",
+      "messages": [
+        {
+          "ruleId": "no-unused-vars",
+          "severity": 2,
+          "message": "'unusedVar' is defined but never used.",
+          "line": 3
+        }
+      ]
+    }
+  ]
+}

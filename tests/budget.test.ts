@@ -13,8 +13,8 @@ describe('Budget selection & token estimation', () => {
   });
 
   it('estimates tokens conservatively', () => {
-    expect(estimateTokens(350)).toBe(100);
-    expect(estimateTokens(35)).toBe(10);
+    expect(estimateTokens(350)).toBe(350);
+    expect(estimateTokens(35)).toBe(35);
   });
 
   it('sorts files deterministically by path', () => {

@@ -20,7 +20,7 @@ export function parseUnifiedPatch(
     return { success: false, error: 'Empty or missing patch' };
   }
 
-  const lines = patch.split('\n');
+  const lines = patch.replace(/\n$/, '').split('\n');
   const addedLines = new Set<number>();
   let hunkCount = 0;
 
@@ -38,7 +38,7 @@ export function parseUnifiedPatch(
 
     if (line.startsWith('@@ ')) {
       // If we were in a hunk, verify hunk reconciliation
-      if (inHunk && currentNewCount > 0 && hunkNewProcessed !== currentNewCount) {
+      if (inHunk && (hunkNewProcessed !== currentNewCount || hunkOldProcessed !== currentOldCount)) {
         return {
           success: false,
           error: `Hunk new line count mismatch: expected ${currentNewCount}, got ${hunkNewProcessed}`,
@@ -74,7 +74,7 @@ export function parseUnifiedPatch(
       hunkNewProcessed++;
     } else if (line.startsWith('-')) {
       hunkOldProcessed++;
-    } else if (line.startsWith(' ') || line === '') {
+    } else if (line.startsWith(' ')) {
       currentNewLineNum++;
       hunkNewProcessed++;
       hunkOldProcessed++;
@@ -82,12 +82,11 @@ export function parseUnifiedPatch(
       // "\ No newline at end of file"
       continue;
     } else {
-      // Unknown line prefix inside a hunk; ignore or handle safely
-      continue;
+      return { success: false, error: 'Invalid hunk line prefix' };
     }
   }
 
-  if (inHunk && currentNewCount > 0 && hunkNewProcessed !== currentNewCount) {
+  if (inHunk && (hunkNewProcessed !== currentNewCount || hunkOldProcessed !== currentOldCount)) {
     return {
       success: false,
       error: `Final hunk new line count mismatch: expected ${currentNewCount}, got ${hunkNewProcessed}`,

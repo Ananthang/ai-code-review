@@ -13,6 +13,7 @@ export interface PullRequestDetails {
   commentBody?: string;
   commentId?: number;
   targetFile?: string;
+  mayTriggerReview?: boolean;
 }
 
 export interface GitHubFile {
@@ -73,7 +74,7 @@ export class OctokitGitHubClient implements GitHubClient {
   private readonly repo: string;
 
   constructor(token: string, owner?: string, repo?: string) {
-    this.octokit = github.getOctokit(token);
+    this.octokit = github.getOctokit(token, { request: { timeout: 15000 } });
     this.owner = owner || github.context.repo.owner;
     this.repo = repo || github.context.repo.repo;
   }
@@ -89,6 +90,15 @@ export class OctokitGitHubClient implements GitHubClient {
         throw new Error("Event 'issue_comment' is not associated with a pull request");
       }
       const pullNumber = payload.issue.number;
+      let mayTriggerReview = false;
+      if (payload.action === 'created' && payload.sender?.login) {
+        try {
+          const permission = await this.octokit.rest.repos.getCollaboratorPermissionLevel({
+            owner: this.owner, repo: this.repo, username: payload.sender.login,
+          });
+          mayTriggerReview = ['admin', 'maintain', 'write'].includes(permission.data.permission);
+        } catch { /* Fail closed when authorization cannot be established. */ }
+      }
       const response = await this.octokit.rest.pulls.get({
         owner: this.owner,
         repo: this.repo,
@@ -98,7 +108,7 @@ export class OctokitGitHubClient implements GitHubClient {
       const pr = response.data;
       const headRepoFullName = pr.head?.repo?.full_name;
       const baseRepoFullName = pr.base?.repo?.full_name;
-      const isFork = Boolean(headRepoFullName && baseRepoFullName && headRepoFullName !== baseRepoFullName);
+      const isFork = !headRepoFullName || !baseRepoFullName || headRepoFullName !== baseRepoFullName;
       const isDraft = Boolean(pr.draft);
       const commentBody = payload.comment?.body || '';
 
@@ -122,6 +132,7 @@ export class OctokitGitHubClient implements GitHubClient {
         commentBody,
         commentId: payload.comment?.id,
         targetFile,
+        mayTriggerReview,
       };
     }
 
@@ -132,7 +143,7 @@ export class OctokitGitHubClient implements GitHubClient {
 
     const headRepoFullName = pr.head?.repo?.full_name;
     const baseRepoFullName = pr.base?.repo?.full_name;
-    const isFork = Boolean(headRepoFullName && baseRepoFullName && headRepoFullName !== baseRepoFullName);
+    const isFork = !headRepoFullName || !baseRepoFullName || headRepoFullName !== baseRepoFullName;
     const isDraft = Boolean(pr.draft);
 
     return {
@@ -227,6 +238,7 @@ export class OctokitGitHubClient implements GitHubClient {
 
         comments.push(...(response.data as ExistingReviewComment[]));
         if (response.data.length < perPage) break;
+        if (page === maxPages) throw new Error('Comment inventory incomplete');
         page++;
       }
 
@@ -254,6 +266,7 @@ export class OctokitGitHubClient implements GitHubClient {
 
         comments.push(...(response.data as ExistingIssueComment[]));
         if (response.data.length < perPage) break;
+        if (page === maxPages) throw new Error('Comment inventory incomplete');
         page++;
       }
 
@@ -289,32 +302,9 @@ export class OctokitGitHubClient implements GitHubClient {
       });
 
       return { publishedCount: comments.length, errors: [] };
-    } catch (batchErr: unknown) {
-      // If batch review fails (e.g. line validation on a single comment or permission),
-      // attempt fallback individual comment publication so valid comments are not lost
-      const errors: string[] = [];
-      let published = 0;
-
-      for (const comment of comments) {
-        try {
-          await this.octokit.rest.pulls.createReviewComment({
-            owner: this.owner,
-            repo: this.repo,
-            pull_number: pullNumber,
-            commit_id: commitSha,
-            path: comment.path,
-            line: comment.line,
-            side: 'RIGHT',
-            body: comment.body,
-          });
-          published++;
-        } catch (individualErr: unknown) {
-          const sanitized = this.sanitizeError(individualErr, `Failed to publish comment on ${comment.path}:${comment.line}`);
-          errors.push(sanitized.message);
-        }
-      }
-
-      return { publishedCount: published, errors };
+    } catch {
+      // A failed response may follow a successful write. Never blindly retry.
+      return { publishedCount: 0, errors: ['publication_outcome_unknown'] };
     }
   }
 
@@ -347,14 +337,6 @@ export class OctokitGitHubClient implements GitHubClient {
   }
 
   private sanitizeError(err: unknown, contextMsg: string): Error {
-    if (err instanceof Error) {
-      // Remove any bearer tokens or sensitive query strings from error message
-      const sanitized = err.message
-        .replace(/ghp_[0-9a-zA-Z]{36}/g, '[REDACTED_TOKEN]')
-        .replace(/token\s+[^\s]+/gi, 'token [REDACTED]')
-        .replace(/bearer\s+[^\s]+/gi, 'bearer [REDACTED]');
-      return new Error(`${contextMsg}: ${sanitized}`);
-    }
-    return new Error(`${contextMsg}: Unknown error`);
+    return new Error(contextMsg);
   }
 }

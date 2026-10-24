@@ -63,6 +63,7 @@ export interface Config {
   provider: string;
   model: string;
   providerApiKey: string;
+  providerBaseUrl: string;
   allowExternalProvider: boolean;
   maxFiles: number;
   maxFileBytes: number;

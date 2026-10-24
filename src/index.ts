@@ -1,12 +1,13 @@
 import * as core from '@actions/core';
+import { hasPromptInjection } from './security/ai-guard.js';
 import { parseConfig } from './config.js';
 import { GitHubClient, OctokitGitHubClient } from './github/client.js';
 import { PathExclusionFilter } from './security/exclusions.js';
 import { parseUnifiedPatch } from './github/diff.js';
 import { budgetFiles } from './review/budget.js';
 import { AIProvider, Finding, ParsedPatchFile, ReviewOutcome, ReviewStatus } from './types.js';
-import { GeminiProvider } from './providers/gemini.js';
-import { FakeProvider } from './providers/fake.js';
+import { createProvider } from './providers/factory.js';
+import { HttpProvider } from './providers/http.js';
 import { validateAndFilterFindings } from './review/validate.js';
 import { publishFindingsAndSummary } from './github/comments.js';
 import { ingestStaticReports } from './analyzers/static.js';
@@ -41,7 +42,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     if (prDetails.eventName === 'issue_comment') {
       const comment = (prDetails.commentBody || '').trim().toLowerCase();
       const isReviewTrigger =
-        comment.startsWith('/review') || comment.startsWith('/ai-review') || comment.startsWith('/recheck');
+        /^\/(?:review|ai-review|recheck)(?:\s+\S+)?$/.test(comment);
 
       if (!isReviewTrigger) {
         status = 'skipped';
@@ -50,11 +51,18 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
 
+      if (prDetails.action !== 'created' || !prDetails.mayTriggerReview) {
+        return setActionOutputs({ status: 'skipped', reasonCode: 'comment_trigger_not_authorized', reviewedFiles: 0, publishedFindings: 0 });
+      }
+
       // Acknowledge review trigger with reaction
       if (prDetails.commentId && client.addCommentReaction) {
         await client.addCommentReaction(prDetails.commentId, 'eyes');
       }
     } else {
+      if (prDetails.eventName !== 'pull_request') {
+        return setActionOutputs({ status: 'skipped', reasonCode: 'unsupported_event', reviewedFiles: 0, publishedFindings: 0 });
+      }
       const allowedActions = ['opened', 'synchronize', 'reopened'];
       if (!allowedActions.includes(prDetails.action)) {
         status = 'skipped';
@@ -81,7 +89,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     // 3. Provider validation & external provider opt-in check (FR-05, FR-10)
     const effectiveProvider = customProvider ? customProvider.name : config.provider;
 
-    if (effectiveProvider === 'gemini') {
+    if (['gemini', 'openai', 'anthropic'].includes(effectiveProvider)) {
       if (!config.allowExternalProvider) {
         status = 'skipped';
         reasonCode = 'external_provider_opt_in_required';
@@ -94,10 +102,10 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       if (!config.providerApiKey) {
         status = 'skipped';
         reasonCode = 'missing_provider_api_key';
-        SafeLogger.warning('Diff review skipped: provider-api-key is required for Gemini provider.');
+        SafeLogger.warning('Diff review skipped: provider-api-key is required for the selected provider.');
         return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
       }
-    } else if (effectiveProvider !== 'fake') {
+    } else if (!['fake', 'ollama'].includes(effectiveProvider)) {
       status = 'skipped';
       reasonCode = `unsupported_provider_${effectiveProvider}`;
       SafeLogger.warning(`Diff review skipped: provider '${effectiveProvider}' is not supported in this version.`);
@@ -107,9 +115,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     // 4. GitHub API diff collection and exclusions (FR-02, FR-03)
     const { files: ghFiles, isComplete } = await client.fetchPullRequestFiles(prDetails.pullNumber);
     if (!isComplete) {
-      SafeLogger.warning('File inventory was truncated by API limits; review will proceed with partial coverage.');
-      status = 'partial';
-      reasonCode = 'incomplete_file_inventory';
+      return setActionOutputs({ status: 'skipped', reasonCode: 'incomplete_file_inventory', reviewedFiles: 0, publishedFindings: 0 });
     }
 
     const exclusionFilter = new PathExclusionFilter(config.excludePatterns);
@@ -124,9 +130,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       const filePath = ghFile.filename;
 
       if (prDetails.targetFile) {
-        const target = prDetails.targetFile.toLowerCase();
-        const normFile = filePath.toLowerCase();
-        if (!normFile.includes(target) && !target.includes(normFile)) {
+        if (filePath !== prDetails.targetFile) {
           continue;
         }
       }
@@ -147,10 +151,17 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         continue;
       }
 
+      if (hasPromptInjection(filePath + '\n' + ghFile.patch)) {
+        recordExclusion('ai_guard_prompt_injection');
+        status = 'partial';
+        reasonCode = 'ai_guard_files_skipped';
+        continue;
+      }
+
       const patchScreen = exclusionFilter.testPatchContent(ghFile.patch);
       if (patchScreen.hasMarker) {
         recordExclusion('credential_marker_detected');
-        SafeLogger.warning(`Excluded file '${filePath}' due to high-confidence credential marker detection.`);
+        SafeLogger.warning('Excluded a patch containing a credential marker.');
         continue;
       }
 
@@ -164,18 +175,22 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     }
 
     if (eligiblePatchFiles.length === 0) {
-      status = 'completed';
-      reasonCode = 'no_eligible_files';
+      status = 'skipped';
+      reasonCode = excludedReasons.ai_guard_prompt_injection ? 'ai_guard_files_skipped' : 'no_eligible_files';
       SafeLogger.info('No eligible files to review after exclusions.');
       return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
     // 5. Budget enforcement (FR-04)
+    const provider = customProvider ?? createProvider(config);
     const budget = budgetFiles(eligiblePatchFiles, {
       maxFiles: config.maxFiles,
       maxFileBytes: config.maxFileBytes,
       maxInputBytes: config.maxInputBytes,
       maxInputTokens: config.maxInputTokens,
+      measureInput: provider instanceof HttpProvider ? (files) => Buffer.byteLength(JSON.stringify(provider.requestBody({
+        files, maxFindings: config.maxFindings, language: config.reviewLanguage,
+      })), 'utf8') : undefined,
     });
 
     for (const skipped of budget.skippedFiles) {
@@ -183,7 +198,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     }
 
     if (budget.includedFiles.length === 0) {
-      status = 'completed';
+      status = 'skipped';
       reasonCode = 'all_files_exceeded_budgets';
       SafeLogger.info('All eligible files exceeded configured size or token budgets.');
       return setActionOutputs({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
@@ -199,19 +214,6 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     }
 
     // 6. Provider execution with 60-second timeout (FR-05)
-    let provider: AIProvider;
-    if (customProvider) {
-      provider = customProvider;
-    } else if (config.provider === 'gemini') {
-      provider = new GeminiProvider({
-        apiKey: config.providerApiKey,
-        model: config.model,
-        maxOutputTokens: config.maxOutputTokens,
-      });
-    } else {
-      provider = new FakeProvider();
-    }
-
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), 60000); // 60s provider timeout
 
@@ -231,7 +233,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
     } catch (providerErr: unknown) {
       clearTimeout(timeout);
-      SafeLogger.error(`Provider review failed: ${(providerErr as Error).message}`);
+      SafeLogger.error('Provider review failed; response and error body withheld.');
       status = 'partial';
       reasonCode = 'provider_request_failed';
       return setActionOutputs({
@@ -255,12 +257,15 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         filePatchMap,
       });
       SafeLogger.info(`Ingested ${staticResult.findings.length} findings from ${staticResult.processedReports} report(s)`);
+      if (staticResult.skippedReports.length) { status = 'partial'; reasonCode = 'static_reports_skipped'; }
       rawFindings.push(...staticResult.findings);
     }
 
     // 8. Runtime schema & added-line validation (FR-06, FR-07)
     const { validFindings, droppedFindings } = validateAndFilterFindings(rawFindings, { filePatchMap });
     if (droppedFindings.length > 0) {
+      status = 'partial';
+      reasonCode = 'invalid_findings_dropped';
       SafeLogger.info(`Dropped ${droppedFindings.length} invalid findings (out of bounds or malformed)`);
     }
 
@@ -302,6 +307,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       });
     }
 
+    if (publishResult.errors.length) { status = 'partial'; reasonCode = 'publication_incomplete'; }
     publishedCount = publishResult.publishedCount;
     SafeLogger.info(`Published ${publishedCount} new inline findings (deduped: ${publishResult.dedupedCount})`);
 
@@ -331,8 +337,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       outputTokens,
     });
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : 'Unknown fatal error';
-    SafeLogger.error(`Action execution failed: ${errorMsg}`);
+    SafeLogger.error('Action execution failed; error details withheld to protect source and credentials.');
     status = 'failed';
     reasonCode = 'unexpected_error';
 
@@ -366,6 +371,6 @@ function setActionOutputs(outcome: ReviewOutcome): ReviewOutcome {
 // Top level execution when run directly by GitHub Actions runner
 if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   runReview().catch((err) => {
-    core.setFailed(err instanceof Error ? err.message : String(err));
+    core.error('Action could not report its outcome.');
   });
 }

@@ -1,17 +1,20 @@
 {
-  "files": [
-    {
-      "path": "app/models/user.rb",
-      "offenses": [
-        {
-          "severity": "convention",
-          "message": "Use find_by instead of where.first.",
-          "cop_name": "Rails/FindBy",
-          "location": {
-            "line": 15
+  "headSha": "commit123",
+  "report": {
+    "files": [
+      {
+        "path": "app/models/user.rb",
+        "offenses": [
+          {
+            "severity": "convention",
+            "message": "Use find_by instead of where.first.",
+            "cop_name": "Rails/FindBy",
+            "location": {
+              "line": 15
+            }
           }
-        }
-      ]
-    }
-  ]
+        ]
+      }
+    ]
+  }
 }

@@ -1,12 +1,18 @@
 {
-  "results": {
-    "failed_checks": [
-      {
-        "check_id": "CKV_AWS_20",
-        "check_name": "S3 Bucket has an ACL defined granting public read access.",
-        "file_path": "/terraform/s3.tf",
-        "file_line_range": [12, 18]
-      }
-    ]
+  "headSha": "commit123",
+  "report": {
+    "results": {
+      "failed_checks": [
+        {
+          "check_id": "CKV_AWS_20",
+          "check_name": "S3 Bucket has an ACL defined granting public read access.",
+          "file_path": "/terraform/s3.tf",
+          "file_line_range": [
+            12,
+            18
+          ]
+        }
+      ]
+    }
   }
 }

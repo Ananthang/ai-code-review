@@ -105,6 +105,7 @@ export interface ExclusionResult {
 export function normalizeRepoPath(rawPath: string): string | null {
   if (!rawPath || typeof rawPath !== 'string') return null;
   const normalized = rawPath.replace(/\\/g, '/').trim();
+  if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized) || /[\x00-\x1f]/.test(normalized)) return null;
   const segments = normalized.split('/').filter((s) => Boolean(s) && s !== '.');
 
   if (segments.some((s) => s === '..')) {

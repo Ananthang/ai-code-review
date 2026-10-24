@@ -38,5 +38,5 @@ jobs:
 
       - name: Verify Bundle Integrity
         run: |
-          git status --porcelain
           test -f dist/index.js
+          git diff --exit-code -- dist/index.js

@@ -1,6 +1,8 @@
 # Product requirements — AI Code Review Action
 
-**Version:** 0.2 · **Date:** 24 October 2026 · **Status:** Proposed, not implemented
+> Implementation update — 24 October 2026: source and local tests now exist, including Gemini, OpenAI, Anthropic Claude and Ollama adapters. The design below remains the target contract; it does not imply every requirement is met. See [implementation review](IMPLEMENTATION_REVIEW.md) for verified fixes and open gaps, and [provider setup](PROVIDERS.md).
+
+**Version:** 0.2 · **Date:** 24 October 2026 · **Status:** Requirements baseline; implementation under validation
 
 **Product owner:** Project maintainer. **Delivery roles:** maintainer owns prioritization and approval; implementer owns engineering and tests; demo reviewer assesses finding usefulness. These are roles, not assigned people.
 
@@ -26,7 +28,7 @@ Initial target codebases are Next.js/React, Ruby on Rails, and AWS Lambda applic
 
 **Conditional MVP:** ingest optional ESLint, RuboCop, Brakeman, and Checkov results when supplied by separately configured checks. Missing tools do not prevent AI review. The AI job must not install or execute contributor-controlled tooling with its secrets.
 
-**After the MVP:** Ollama on a suitably connected runner, Claude/OpenAI adapters, richer context, additional static-result formats, and team evaluation. The shared provider interface is required now; working additional adapters are not.
+**Expanded scope:** Ollama, OpenAI and Anthropic Claude adapters are now implemented with mock contract tests; each needs live validation before being claimed demo-ready. Richer context, additional static-result formats and team evaluation remain later work.
 
 **Excluded:** dashboard, database, hosted SaaS, autofix commits, auto-approval, merge blocking, full-repository analysis, guaranteed vulnerability detection, automatic paid fallback, and company-code processing before approval.
 
@@ -100,7 +102,7 @@ Build a fixed initial evaluation set of at least 12 PR fixtures: six with labele
 
 ## 9. Decisions and open items
 
-**Decided for planning:** Gemini first; Ollama deferred; same-repository non-draft PRs only; comment-only behavior; static report ingestion separated from secret-bearing review; no automatic retries; proposed MIT license for owner approval before release.
+**Decided for planning:** Gemini first; additional adapters now included under validation; same-repository non-draft PRs only; comment-only behavior; static report ingestion separated from secret-bearing review; no automatic retries; proposed MIT license for owner approval before release.
 
 **Before implementation:** confirm personal GitHub repository and ownership, action packaging/runtime compatibility, and the selected test framework.
 

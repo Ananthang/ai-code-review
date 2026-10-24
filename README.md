@@ -1,111 +1,99 @@
 # AI Code Review Action
 
-An open-source GitHub Action providing bounded, comment-only AI feedback on pull requests using Gemini and a provider-neutral interface.
+A TypeScript GitHub Action for bounded, advisory pull-request feedback. Supports Gemini, OpenAI, Anthropic Claude, and Ollama through a shared HTTP transport, plus a deterministic fake provider for tests.
 
-**Status:** Implemented (v0.2.0). All core milestones (M1–M6) are implemented, verified by deterministic tests, and bundled for standalone GitHub Actions runtime execution.
+**Status: implemented POC, locally tested; not yet live-certified or production-ready.** Passing deterministic tests is not evidence of model accuracy, actual cost, or completion of the company-pilot gates.
 
-- [Product requirements](docs/PRD.md): scope, user journeys, requirements, and acceptance criteria.
-- [Architecture](docs/ARCHITECTURE.md): components, trust boundaries, configuration, and failure handling.
-- [Delivery plan](docs/DELIVERY_PLAN.md): sequenced work, validation, risks, and release gates.
+- [Code-review-only AI guard](docs/AI_GUARD.md)
+- [Implementation review and remaining issues](docs/IMPLEMENTATION_REVIEW.md)
+- [Provider setup and behavior](docs/PROVIDERS.md)
+- [Product requirements](docs/PRD.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Delivery plan](docs/DELIVERY_PLAN.md)
 
----
+## Setup
 
-## Key Features
+For this repository, `.github/workflows/review.yml` builds the trusted default branch and invokes the action. It does not build the PR head in the credential-bearing job. Optionally set repository variable `AI_PROVIDER` to `gemini`, `openai`, or `anthropic` (defaults to `gemini` when unset or empty), set `AI_MODEL` to an available model supporting the documented API/JSON behavior, and set secret `AI_PROVIDER_API_KEY` to that provider's key. Review provider terms and billing controls before enabling the workflow. Changes in this working tree must reach the trusted default branch before that workflow uses them.
 
-- **Bounded & Comment-Only:** Operates strictly in comment mode. Never approves, requests changes, or blocks merges.
-- **Provider-Neutral Architecture:** Pluggable `AIProvider` contract with full Google Gemini adapter (`@google/genai`) and deterministic `FakeProvider` for testing.
-- **Strict Diff & Line Validation:** Parses unified diffs, extracts hunk headers, reconciles line counts, and guarantees findings are attached *only* to verified newly added (`+`) lines.
-- **Defense in Depth Security:**
-  - Mandatory exclusion of secret files (`.env*`, `*.pem`, `*.key`, `id_rsa`, `credentials.json`, `.aws/*`, `.ssh/*`).
-  - High-confidence regex screening for credential markers in diffs (AWS keys, GitHub tokens, private keys).
-  - Skips binary files, vendor directories (`node_modules`), lockfiles, and minified assets.
-  - Neutralizes prompt injection attempts and sanitizes output (@-mentions and HTML tags).
-  - Explicit external opt-in required (`allow-external-provider: true`) before code diffs leave GitHub.
-- **Rerun Deduplication:** Computes stable SHA-256 fingerprints embedded invisibly in comments (`<!-- ai-code-review-fingerprint:v1:... -->`). Reruns on unchanged code produce zero duplicate comments.
-- **Stale Head Guard:** Rechecks the latest PR commit SHA immediately before publishing; safely discards results if the PR head changed while review was calculating.
-- **Maintained Summary:** Creates or updates a single markdown summary comment (`<!-- ai-code-review-summary:v1 -->`) tracking coverage, exclusions, findings by severity, and token usage.
-- **Static Analyzer Ingestion:** Consumes bounded JSON/SARIF reports (ESLint, RuboCop, Brakeman, Checkov, SARIF) produced by separate, credential-free CI jobs.
-
----
-
-## Quickstart
-
-### 1. Add Workflow to Repository
-
-Create `.github/workflows/ai-review.yml`:
+For another repository, publish the bundled action first, then replace `REVIEWED_ACTION_COMMIT_SHA` below with its full reviewed commit SHA. This is a template, not an assertion that a release tag exists.
 
 ```yaml
-name: AI Code Review
-
+name: AI Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-
 permissions:
   contents: read
   pull-requests: write
   issues: write
-
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 jobs:
   review:
-    name: AI Review
+    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
-      - name: Run AI Code Review Action
-        uses: ananthan/ai-code-review@v0.2.0
+      - uses: Ananthang/ai-code-review@REVIEWED_ACTION_COMMIT_SHA
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          provider: 'gemini'
-          model: 'gemini-3.8-flash'
-          provider-api-key: ${{ secrets.GEMINI_API_KEY }}
+          provider: ${{ vars.AI_PROVIDER || 'gemini' }}
+          model: ${{ vars.AI_MODEL }}
+          provider-api-key: ${{ secrets.AI_PROVIDER_API_KEY }}
           allow-external-provider: 'true'
-          max-findings: 10
-          max-files: 20
 ```
 
----
+For local Ollama, use the separate instructions in [PROVIDERS.md](docs/PROVIDERS.md); a hosted GitHub runner cannot reach a server on your laptop through its own localhost.
 
-## Configuration Reference
+## Configuration
 
-| Input | Description | Default | Ceiling |
-| --- | --- | --- | --- |
-| `github-token` | GitHub token (`pull-requests:write`, `issues:write`) | `${{ github.token }}` | Required |
-| `provider` | Provider adapter (`gemini`, `fake`) | `gemini` | `gemini` \| `fake` |
-| `model` | Explicit model identifier (no silent fallback) | *Required* | Explicit string |
-| `provider-api-key` | Secret API key for AI provider | `''` | Masked in logs |
-| `allow-external-provider` | Explicit opt-in for diffs leaving GitHub | `false` | Boolean |
-| `max-files` | Maximum files to review | `20` | `100` |
-| `max-file-bytes` | Maximum patch size per file | `20480` (20 KiB) | `102400` (100 KiB) |
-| `max-input-bytes` | Total serialized input budget | `81920` (80 KiB) | `512000` (500 KiB) |
-| `max-input-tokens` | Estimated input tokens ceiling guard | `24000` | `100000` |
-| `max-output-tokens` | Provider output token cap | `4000` | `8192` |
-| `max-requests` | Max provider requests per run | `1` | `1` (Fixed in MVP) |
-| `max-findings` | Max inline findings published | `10` | `50` |
-| `review-language` | Natural language for feedback | `English` | Any valid language |
-| `exclude-patterns` | Additional glob patterns to exclude | `''` | Newline/comma separated |
-| `mode` | Review mode | `comment` | Only `comment` |
-| `static-report-paths` | Paths/globs to local static tool reports | `''` | Local paths |
+| Input | Default / behavior |
+| --- | --- |
+| `github-token` | GitHub Actions token; use the standard `GITHUB_TOKEN` bot identity |
+| `provider` | `gemini`; also `openai`, `anthropic`, `ollama`, `fake` |
+| `model` | Required explicit identifier; no substitution or fallback |
+| `provider-api-key` | Required for cloud providers; optional Ollama bearer key |
+| `provider-base-url` | Ollama only: `http://127.0.0.1:11434`; remote requires HTTPS and opt-in |
+| `allow-external-provider` | `false`; must be true for cloud or remote Ollama |
+| `max-files` | 20, ceiling 100 |
+| `max-file-bytes` | 20,480, ceiling 102,400 |
+| `max-input-bytes` | 81,920, ceiling 512,000; includes serialized instructions and envelope |
+| `max-input-tokens` | 24,000, ceiling 100,000; conservative byte-based guard, not actual billing |
+| `max-output-tokens` | 4,000, ceiling 8,192; selected model must support this value |
+| `max-requests` | 1; no automatic retries |
+| `max-findings` | 10, ceiling 50 |
+| `review-language` | English |
+| `exclude-patterns` | Additional newline/comma-separated globs; secret exclusions remain mandatory |
+| `mode` | `comment` only |
+| `static-report-paths` | Explicit paths, no glob expansion; SHA-wrapped JSON reports |
 
----
+Only included added lines can receive findings. Fork/draft PRs are skipped. Prompt framing and exclusions reduce risk but cannot eliminate injection, secret exposure, or false positives. No reviewed code is executed by the action itself. No approvals or change requests are submitted.
 
-## Local Development & Testing
+The included workflow also handles `/review` and `/review exact/path.ts` comments. The actor must have repository write/maintain/admin permission; denied or unverifiable permission skips review. This feature requires the `issue_comment` workflow trigger. Dedupe recognizes standard `github-actions[bot]` comments; custom PAT/app identities are not supported for maintained-comment ownership.
 
-```bash
-# Install dependencies
-npm install
+Outputs include `status`, `reason-code`, `reviewed-files`, `published-findings`, and token counts where available. Skips/failures may only appear in action outputs and logs; always inspect status before interpreting an old PR summary.
 
-# Run TypeScript type check
-npm run typecheck
+## Static reports
 
-# Run Vitest test suite (48 unit & integration tests)
+Produce reports in a separate job without AI credentials, verify the artifact's producing workflow/run in your integration, and supply explicit downloaded paths. Wrap each tool's JSON as:
+
+```json
+{"headSha":"EXACT_PR_HEAD_SHA","report":{"tool_specific":"original JSON here"}}
+```
+
+`report` may be an array for ESLint. Supported extractors: ESLint, RuboCop, Brakeman, Checkov, SARIF. Paths must map exactly to the repository diff; normalize checkout-specific paths in the producer. Missing/mismatched wrappers, malformed structures and oversized inputs are skipped. A SHA inside a report is not proof of its origin. No real static analyzer execution is bundled with this action.
+
+## Local validation
+
+```sh
+npm ci --ignore-scripts
 npm test
-
-# Build single-file bundled action (dist/index.js)
-npm run bundle
+npm run build
 ```
 
----
+Build runs TypeScript checking and regenerates `dist/index.js`. Commit the regenerated bundle with source changes; CI checks for bundle drift. Tests use synthetic content and mock HTTP responses, not paid provider calls. See the implementation review for the latest recorded result and remaining release gates.
 
 ## License
 
-[MIT](LICENSE) © 2026 AI Code Review Contributors
+[MIT](LICENSE).

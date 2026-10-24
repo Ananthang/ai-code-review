@@ -1,3 +1,4 @@
+import { sanitizeFindingContent } from '../review/validate.js';
 import { Finding, ReviewOutcome, Severity } from '../types.js';
 import {
   computeFindingFingerprint,
@@ -76,7 +77,7 @@ export function formatSummaryComment(data: SummaryData): string {
   // 1. Overview description
   lines.push('### 📝 Overview of Changes');
   if (data.overview && data.overview.trim()) {
-    lines.push(data.overview.trim());
+    lines.push(sanitizeFindingContent(data.overview.trim()));
   } else if (data.reviewedFiles === 0) {
     lines.push('No eligible code files were found to review after applying exclusions.');
   } else {
@@ -183,6 +184,7 @@ export async function publishFindingsAndSummary(
   const existingFingerprints = new Set<string>();
 
   for (const c of existingComments) {
+    if (c.user?.login !== 'github-actions[bot]') continue;
     const fp = extractFingerprintFromComment(c.body);
     if (fp) {
       existingFingerprints.add(fp);
@@ -198,6 +200,7 @@ export async function publishFindingsAndSummary(
     if (existingFingerprints.has(fingerprint)) {
       dedupedCount++;
     } else {
+      existingFingerprints.add(fingerprint);
       novelFindings.push({ finding, fingerprint });
     }
   }
@@ -231,10 +234,11 @@ export async function publishFindingsAndSummary(
 
   // 6. Maintain single summary issue comment
   const existingIssueComments = await client.fetchIssueComments(pullNumber);
-  const existingSummary = existingIssueComments.find((c) => isSummaryComment(c.body));
+  const existingSummary = existingIssueComments.find((c) => c.user?.login === 'github-actions[bot]' && isSummaryComment(c.body));
 
   const fullSummaryData: SummaryData = {
     ...summaryData,
+    ...(publishResult.errors.length ? { status: 'partial' as const, reasonCode: 'publication_incomplete' } : {}),
     totalFindingsCount: findings.length,
     novelFindingsCount: novelFindings.length,
     publishedFindingsCount: publishResult.publishedCount,
@@ -243,7 +247,9 @@ export async function publishFindingsAndSummary(
   };
 
   const summaryMarkdown = formatSummaryComment(fullSummaryData);
-  await client.createOrUpdateSummary(pullNumber, summaryMarkdown, existingSummary?.id);
+  try {
+    await client.createOrUpdateSummary(pullNumber, summaryMarkdown, existingSummary?.id);
+  } catch { publishResult.errors.push('summary_publication_failed'); }
 
   return {
     publishedCount: publishResult.publishedCount,

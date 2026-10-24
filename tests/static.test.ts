@@ -65,7 +65,7 @@ describe('Static analysis report ingestion', () => {
 
     expect(result.processedReports).toBe(1);
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('critical');
+    expect(result.findings[0].severity).toBe('medium');
     expect(result.findings[0].line).toBe(28);
   });
 

@@ -1,8 +1,10 @@
 # Technical architecture — AI Code Review Action
 
+> Implementation update — 24 October 2026: source and local tests now exist, including Gemini, OpenAI, Anthropic Claude and Ollama adapters. The design below remains the target contract; it does not imply every requirement is met. See [implementation review](IMPLEMENTATION_REVIEW.md) for verified fixes and open gaps, and [provider setup](PROVIDERS.md).
+
 **Version:** 0.2 · **Date:** 24 October 2026 · **Status:** Proposed
 
-This document implements the intent of [the PRD](PRD.md). All components below are planned.
+This document implements the intent of [the PRD](PRD.md). The sections below describe the target architecture; current implementation gaps are tracked in the review.
 
 ## 1. System and trust boundaries
 
@@ -132,10 +134,10 @@ Only static findings on eligible changed lines become inline feedback. An unavai
 | Input | Contract |
 | --- | --- |
 | `github-token` | Required for API access; supplied from an Actions secret |
-| `provider` | `gemini` initially; unsupported values safely stop before requests |
+| `provider` | `gemini`, `openai`, `anthropic`, `ollama`; `fake` for tests; unsupported values stop before requests |
 | `model` | Explicit provider model identifier; no silent substitution |
 | `provider-api-key` | Secret; masked before any diagnostics |
-| `allow-external-provider` | False by default; explicit opt-in required for Gemini |
+| `allow-external-provider` | False by default; explicit opt-in required for cloud providers and remote Ollama |
 | `max-files`, `max-file-bytes`, `max-input-bytes` | Positive bounded integers; defaults in PRD |
 | `max-input-tokens`, `max-output-tokens` | Additional input estimate guard and enforced output cap |
 | `max-requests` | Fixed maximum of one in the MVP |

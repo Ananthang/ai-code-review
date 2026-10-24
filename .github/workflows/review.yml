@@ -1,69 +1,45 @@
 name: AI Code Review
-
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-
+  issue_comment:
+    types: [created]
 permissions:
   contents: read
-
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
 jobs:
-  # Optional: run linter in an isolated credential-free job
-  lint:
-    name: Lint & Static Checks (No AI Credentials)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout PR
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Run linter and output JSON report
-        continue-on-error: true
-        run: |
-          mkdir -p reports
-          echo '[]' > reports/eslint.json
-
-      - name: Upload static report artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: static-reports
-          path: reports/
-          retention-days: 1
-
-  # Review job: possesses AI credentials, does NOT run arbitrary PR code
   review:
-    name: AI Review
-    needs: [lint]
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       !github.event.pull_request.draft) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review ')))
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions:
       contents: read
       pull-requests: write
       issues: write
-
     steps:
-      - name: Download static report artifacts
-        uses: actions/download-artifact@v4
-        continue-on-error: true
+      # Build only the trusted default branch, NEVER the PR head, with no AI key.
+      # Consumers should instead use a published action pinned to its reviewed commit SHA.
+      - uses: actions/checkout@v4
         with:
-          name: static-reports
-          path: reports/
-
-      - name: Run AI Code Review Action
-        uses: ./
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run bundle
+      - uses: ./
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          provider: 'gemini'
-          model: 'gemini-3.8-flash'
-          provider-api-key: ${{ secrets.GEMINI_API_KEY }}
+          provider: ${{ vars.AI_PROVIDER || 'gemini' }}
+          model: ${{ vars.AI_MODEL }}
+          provider-api-key: ${{ secrets.AI_PROVIDER_API_KEY }}
           allow-external-provider: 'true'
-          static-report-paths: 'reports/*.json'
-          max-findings: 10
-          max-files: 20

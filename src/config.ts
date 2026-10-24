@@ -21,6 +21,7 @@ export const ConfigSchema = z.object({
     'model must be explicitly specified (no silent substitution). Configure via "model" input or GitHub variable / env var (e.g. AI_MODEL, MODEL, GEMINI_MODEL)'
   ),
   providerApiKey: z.string().default(''),
+  providerBaseUrl: z.string().default('http://127.0.0.1:11434'),
   allowExternalProvider: z.boolean().default(false),
   maxFiles: z.number().int().positive().max(LIMIT_CEILINGS.MAX_FILES),
   maxFileBytes: z.number().int().positive().max(LIMIT_CEILINGS.MAX_FILE_BYTES),
@@ -57,8 +58,7 @@ function parseBooleanInput(raw: string | boolean | undefined, defaultValue: bool
 function parseNumberInput(raw: string | number | undefined, defaultValue: number): number {
   if (typeof raw === 'number') return raw;
   if (!raw || !raw.trim()) return defaultValue;
-  const parsed = parseInt(raw.trim(), 10);
-  return Number.isNaN(parsed) ? defaultValue : parsed;
+  return /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : Number.NaN;
 }
 
 export function parseConfig(overrides?: Partial<Config>): Config {
@@ -74,7 +74,9 @@ export function parseConfig(overrides?: Partial<Config>): Config {
       process.env.VARS_MODEL ||
       '')
   ).trim();
-  const providerApiKey = overrides?.providerApiKey ?? (core.getInput('provider-api-key') || process.env.GEMINI_API_KEY || '');
+  const keyEnv: Record<string, string> = { gemini: 'GEMINI_API_KEY', openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', ollama: 'OLLAMA_API_KEY' };
+  const providerApiKey = overrides?.providerApiKey ?? (core.getInput('provider-api-key') || process.env[keyEnv[provider] ?? 'AI_PROVIDER_API_KEY'] || '');
+  const providerBaseUrl = overrides?.providerBaseUrl ?? (core.getInput('provider-base-url') || 'http://127.0.0.1:11434');
 
   const allowExternal = overrides?.allowExternalProvider !== undefined
     ? overrides.allowExternalProvider
@@ -107,6 +109,7 @@ export function parseConfig(overrides?: Partial<Config>): Config {
     provider,
     model,
     providerApiKey,
+    providerBaseUrl,
     allowExternalProvider: allowExternal,
     maxFiles,
     maxFileBytes,

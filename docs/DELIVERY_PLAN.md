@@ -1,5 +1,7 @@
 # Delivery plan
 
+> Implementation update — 24 October 2026: source and local tests now exist, including Gemini, OpenAI, Anthropic Claude and Ollama adapters. The design below remains the target contract; it does not imply every requirement is met. See [implementation review](IMPLEMENTATION_REVIEW.md) for verified fixes and open gaps, and [provider setup](PROVIDERS.md).
+
 **Date:** 24 October 2026 · **Status:** Proposed backlog
 
 Deliver in small reviewable changes. Each milestone ends with evidence and updated documentation. Estimates below are planning ranges for focused engineering time, not delivery commitments; reassess after the first two milestones.
@@ -13,7 +15,7 @@ Deliver in small reviewable changes. Each milestone ends with evidence and updat
 | M5 — Hardening and optional static data | After M4: separate static-job examples, bounded report adapters, provenance checks, log sanitization and failure matrix | Every supported tool format has a fixture; secret sentinel and permission tests pass | 2–4 days |
 | M6 — Evaluation and release | After M5: 12-case corpus, measured live results, setup/troubleshooting, release bundle validation and company-demo brief | PRD acceptance evidence complete; limitations and actual costs documented | 2–3 days |
 
-Indicative total: **11–18 focused engineering days**, excluding approval waits and iteration following evaluation. No implementation completion is claimed.
+Indicative total: **11–18 focused engineering days**, excluding approval waits and iteration following evaluation. The original estimate above is retained for context. Source implementation now exists; completion of release gates is not claimed. See the implementation review for remaining work.
 
 ## First implementation change
 

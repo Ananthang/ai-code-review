@@ -1,34 +1,37 @@
 {
-  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-  "version": "2.1.0",
-  "runs": [
-    {
-      "tool": {
-        "driver": {
-          "name": "SecurityScanner"
-        }
-      },
-      "results": [
-        {
-          "ruleId": "SEC-001",
-          "level": "error",
-          "message": {
-            "text": "Insecure cryptography algorithm used."
-          },
-          "locations": [
-            {
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": "src/crypto.ts"
-                },
-                "region": {
-                  "startLine": 45
+  "headSha": "commit123",
+  "report": {
+    "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+    "version": "2.1.0",
+    "runs": [
+      {
+        "tool": {
+          "driver": {
+            "name": "SecurityScanner"
+          }
+        },
+        "results": [
+          {
+            "ruleId": "SEC-001",
+            "level": "error",
+            "message": {
+              "text": "Insecure cryptography algorithm used."
+            },
+            "locations": [
+              {
+                "physicalLocation": {
+                  "artifactLocation": {
+                    "uri": "src/crypto.ts"
+                  },
+                  "region": {
+                    "startLine": 45
+                  }
                 }
               }
-            }
-          ]
-        }
-      ]
-    }
-  ]
+            ]
+          }
+        ]
+      }
+    ]
+  }
 }

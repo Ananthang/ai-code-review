@@ -11,17 +11,21 @@ inputs:
     required: false
     default: '${{ github.token }}'
   provider:
-    description: 'AI provider name (gemini, fake for testing)'
+    description: 'AI provider name (gemini, openai, anthropic, ollama; fake for testing)'
     required: false
     default: 'gemini'
   model:
-    description: 'Explicit model identifier for the selected provider (e.g. gemini-3.8-flash). Can also be configured via GitHub variable or environment variable (AI_MODEL, MODEL, GEMINI_MODEL).'
+    description: 'Explicit model identifier for the selected provider. Can also be configured via GitHub variable or environment variable (AI_MODEL, MODEL, GEMINI_MODEL).'
     required: false
     default: ''
   provider-api-key:
     description: 'API key for the external AI provider'
     required: false
     default: ''
+  provider-base-url:
+    description: 'Ollama server origin; remote origins require HTTPS and external opt-in'
+    required: false
+    default: 'http://127.0.0.1:11434'
   allow-external-provider:
     description: 'Explicit opt-in to send selected diff content to the external provider'
     required: false
@@ -67,7 +71,7 @@ inputs:
     required: false
     default: 'comment'
   static-report-paths:
-    description: 'Paths or globs to local static tool reports (newline or comma-separated)'
+    description: 'Explicit paths to SHA-wrapped local static tool reports (no globs) (newline or comma-separated)'
     required: false
     default: ''
 

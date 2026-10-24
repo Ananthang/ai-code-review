@@ -1,10 +1,11 @@
-import { ParsedPatchFile } from '../types.js';
+import { ParsedPatchFile, ReviewInput } from '../types.js';
 
 export interface BudgetConfig {
   maxFiles: number;
   maxFileBytes: number;
   maxInputBytes: number;
   maxInputTokens: number;
+  measureInput?: (files: ReviewInput['files']) => number;
 }
 
 export interface BudgetResult {
@@ -16,10 +17,10 @@ export interface BudgetResult {
 
 /**
  * Estimates token count conservatively from character/byte count.
- * ~3.5 bytes per token is a safe conservative estimate for code & diffs.
+ * One token per UTF-8 byte is an intentionally conservative guard, not billing usage.
  */
 export function estimateTokens(byteLength: number): number {
-  return Math.ceil(byteLength / 3.5);
+  return Math.ceil(byteLength);
 }
 
 /**
@@ -51,8 +52,12 @@ export function budgetFiles(files: ParsedPatchFile[], config: BudgetConfig): Bud
       continue;
     }
 
+    const prospectiveBytes = config.measureInput
+      ? config.measureInput([...includedFiles, file].map(({ path, patch }) => ({ path, patch })))
+      : currentBytes + file.byteLength;
+
     // 3. Check total serialized input budget
-    if (currentBytes + file.byteLength > config.maxInputBytes) {
+    if (prospectiveBytes > config.maxInputBytes) {
       skippedFiles.push({
         path: file.path,
         reason: `total_input_bytes_exceeded (${currentBytes + file.byteLength} > ${config.maxInputBytes})`,
@@ -61,7 +66,7 @@ export function budgetFiles(files: ParsedPatchFile[], config: BudgetConfig): Bud
     }
 
     // 4. Check estimated input tokens guard
-    const prospectiveTokens = estimateTokens(currentBytes + file.byteLength);
+    const prospectiveTokens = estimateTokens(prospectiveBytes);
     if (prospectiveTokens > config.maxInputTokens) {
       skippedFiles.push({
         path: file.path,
@@ -71,7 +76,7 @@ export function budgetFiles(files: ParsedPatchFile[], config: BudgetConfig): Bud
     }
 
     includedFiles.push(file);
-    currentBytes += file.byteLength;
+    currentBytes = prospectiveBytes;
   }
 
   return {
