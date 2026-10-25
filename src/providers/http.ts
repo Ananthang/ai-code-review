@@ -37,14 +37,16 @@ export class HttpProvider implements AIProvider {
   public requestBody(input: ReviewInput): object {
     const prompt = buildReviewPrompt(input);
     const model = this.options.model;
-    const limit = this.options.maxOutputTokens ?? 4000;
+    const limit = input.threadContext
+      ? Math.max(this.options.maxOutputTokens ?? 4000, 4000)
+      : (this.options.maxOutputTokens ?? 4000);
     switch (this.name) {
       case 'gemini': {
         const generationConfig: Record<string, unknown> = {
           responseMimeType: 'application/json',
           maxOutputTokens: limit,
         };
-        const level = (this.options.thinkingLevel || 'medium').toLowerCase();
+        const level = (input.threadContext ? 'minimal' : (this.options.thinkingLevel || 'medium')).toLowerCase();
         const levelMap: Record<string, string> = {
           minimal: 'MINIMAL',
           low: 'LOW',
@@ -59,11 +61,11 @@ export class HttpProvider implements AIProvider {
         };
         if (model.includes('gemini-3')) {
           generationConfig.thinkingConfig = {
-            thinkingLevel: levelMap[level] || 'MEDIUM',
+            thinkingLevel: levelMap[level] || 'MINIMAL',
           };
         } else if (model.includes('gemini-2.5')) {
           generationConfig.thinkingConfig = {
-            thinkingBudget: budgetMap[level] || 2048,
+            thinkingBudget: budgetMap[level] || 512,
           };
         }
         return {
@@ -152,7 +154,7 @@ export class HttpProvider implements AIProvider {
       switch (this.name) {
         case 'gemini':
           const finishReason = data.candidates?.[0]?.finishReason;
-          if (finishReason !== 'STOP') {
+          if (finishReason !== 'STOP' && (!input.threadContext || finishReason !== 'MAX_TOKENS')) {
             throw new Error('incomplete_response');
           }
           text = (data.candidates?.[0]?.content?.parts ?? [])
@@ -163,18 +165,18 @@ export class HttpProvider implements AIProvider {
           outputTokens = data.usageMetadata?.candidatesTokenCount;
           break;
         case 'openai':
-          if (data.status !== 'completed') throw new Error('incomplete_response');
+          if (data.status !== 'completed' && (!input.threadContext || data.status !== 'incomplete')) throw new Error('incomplete_response');
           text = data.output.filter((o: any) => o.type === 'message').flatMap((o: any) => o.content)
             .filter((c: any) => c.type === 'output_text').map((c: any) => c.text).join('');
           inputTokens = data.usage?.input_tokens; outputTokens = data.usage?.output_tokens;
           break;
         case 'anthropic':
-          if (data.stop_reason !== 'end_turn') throw new Error('incomplete_response');
+          if (data.stop_reason !== 'end_turn' && (!input.threadContext || data.stop_reason !== 'max_tokens')) throw new Error('incomplete_response');
           text = data.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('');
           inputTokens = data.usage?.input_tokens; outputTokens = data.usage?.output_tokens;
           break;
         case 'ollama':
-          if (data.done !== true || data.done_reason !== 'stop') throw new Error('incomplete_response');
+          if (data.done !== true || (data.done_reason !== 'stop' && (!input.threadContext || data.done_reason !== 'length'))) throw new Error('incomplete_response');
           text = data.message.content;
           inputTokens = data.prompt_eval_count; outputTokens = data.eval_count;
           break;
@@ -186,8 +188,34 @@ export class HttpProvider implements AIProvider {
       try {
         parsedJson = JSON.parse(cleanJson);
       } catch {
-        throw new Error('invalid_response');
+        if (input.threadContext && rawText) {
+          parsedJson = { summary: rawText.slice(0, 4000), findings: [] };
+        } else {
+          throw new Error('invalid_response');
+        }
       }
+
+      if (input.threadContext && parsedJson && typeof parsedJson === 'object' && !Array.isArray(parsedJson)) {
+        const obj = parsedJson as Record<string, unknown>;
+        const summaryText =
+          typeof obj.summary === 'string'
+            ? obj.summary
+            : typeof obj.explanation === 'string'
+              ? obj.explanation
+              : typeof obj.answer === 'string'
+                ? obj.answer
+                : typeof obj.reply === 'string'
+                  ? obj.reply
+                  : typeof obj.message === 'string'
+                    ? obj.message
+                    : undefined;
+
+        parsedJson = {
+          summary: summaryText,
+          findings: Array.isArray(obj.findings) ? obj.findings : [],
+        };
+      }
+
       const parsed = ProviderResponseSchema.safeParse(parsedJson);
       if (!parsed.success) throw new Error('invalid_response');
       const count = (n: unknown) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : undefined;

@@ -47277,14 +47277,14 @@ var HttpProvider = class {
   requestBody(input2) {
     const prompt = buildReviewPrompt(input2);
     const model = this.options.model;
-    const limit = this.options.maxOutputTokens ?? 4e3;
+    const limit = input2.threadContext ? Math.max(this.options.maxOutputTokens ?? 4e3, 4e3) : this.options.maxOutputTokens ?? 4e3;
     switch (this.name) {
       case "gemini": {
         const generationConfig = {
           responseMimeType: "application/json",
           maxOutputTokens: limit
         };
-        const level = (this.options.thinkingLevel || "medium").toLowerCase();
+        const level = (input2.threadContext ? "minimal" : this.options.thinkingLevel || "medium").toLowerCase();
         const levelMap = {
           minimal: "MINIMAL",
           low: "LOW",
@@ -47299,11 +47299,11 @@ var HttpProvider = class {
         };
         if (model.includes("gemini-3")) {
           generationConfig.thinkingConfig = {
-            thinkingLevel: levelMap[level] || "MEDIUM"
+            thinkingLevel: levelMap[level] || "MINIMAL"
           };
         } else if (model.includes("gemini-2.5")) {
           generationConfig.thinkingConfig = {
-            thinkingBudget: budgetMap[level] || 2048
+            thinkingBudget: budgetMap[level] || 512
           };
         }
         return {
@@ -47403,7 +47403,7 @@ var HttpProvider = class {
       switch (this.name) {
         case "gemini":
           const finishReason = data.candidates?.[0]?.finishReason;
-          if (finishReason !== "STOP") {
+          if (finishReason !== "STOP" && (!input2.threadContext || finishReason !== "MAX_TOKENS")) {
             throw new Error("incomplete_response");
           }
           text = (data.candidates?.[0]?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? "").join("");
@@ -47411,19 +47411,19 @@ var HttpProvider = class {
           outputTokens = data.usageMetadata?.candidatesTokenCount;
           break;
         case "openai":
-          if (data.status !== "completed") throw new Error("incomplete_response");
+          if (data.status !== "completed" && (!input2.threadContext || data.status !== "incomplete")) throw new Error("incomplete_response");
           text = data.output.filter((o) => o.type === "message").flatMap((o) => o.content).filter((c) => c.type === "output_text").map((c) => c.text).join("");
           inputTokens = data.usage?.input_tokens;
           outputTokens = data.usage?.output_tokens;
           break;
         case "anthropic":
-          if (data.stop_reason !== "end_turn") throw new Error("incomplete_response");
+          if (data.stop_reason !== "end_turn" && (!input2.threadContext || data.stop_reason !== "max_tokens")) throw new Error("incomplete_response");
           text = data.content.filter((c) => c.type === "text").map((c) => c.text).join("");
           inputTokens = data.usage?.input_tokens;
           outputTokens = data.usage?.output_tokens;
           break;
         case "ollama":
-          if (data.done !== true || data.done_reason !== "stop") throw new Error("incomplete_response");
+          if (data.done !== true || data.done_reason !== "stop" && (!input2.threadContext || data.done_reason !== "length")) throw new Error("incomplete_response");
           text = data.message.content;
           inputTokens = data.prompt_eval_count;
           outputTokens = data.eval_count;
@@ -47436,7 +47436,19 @@ var HttpProvider = class {
       try {
         parsedJson = JSON.parse(cleanJson);
       } catch {
-        throw new Error("invalid_response");
+        if (input2.threadContext && rawText) {
+          parsedJson = { summary: rawText.slice(0, 4e3), findings: [] };
+        } else {
+          throw new Error("invalid_response");
+        }
+      }
+      if (input2.threadContext && parsedJson && typeof parsedJson === "object" && !Array.isArray(parsedJson)) {
+        const obj = parsedJson;
+        const summaryText = typeof obj.summary === "string" ? obj.summary : typeof obj.explanation === "string" ? obj.explanation : typeof obj.answer === "string" ? obj.answer : typeof obj.reply === "string" ? obj.reply : typeof obj.message === "string" ? obj.message : void 0;
+        parsedJson = {
+          summary: summaryText,
+          findings: Array.isArray(obj.findings) ? obj.findings : []
+        };
       }
       const parsed = ProviderResponseSchema.safeParse(parsedJson);
       if (!parsed.success) throw new Error("invalid_response");
@@ -48488,14 +48500,37 @@ async function runReview(customClient, customProvider) {
       const abortController2 = new AbortController();
       const timeout2 = setTimeout(() => abortController2.abort(), 6e4);
       let replyExplanation;
+      let threadReviewSucceeded = false;
       try {
         const result = await provider2.review(threadInput, abortController2.signal);
         replyExplanation = result.summary;
         if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;
         if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
+        threadReviewSucceeded = true;
       } catch (err) {
-        SafeLogger.error("Failed to generate thread explanation from AI provider.");
-        return finish({ status: "partial", reasonCode: "provider_thread_reply_failed", reviewedFiles: 1, publishedFindings: 0 });
+        const primaryCode = err instanceof Error ? err.message : String(err);
+        SafeLogger.warning(`Primary model "${config2.model}" failed during thread reply (${primaryCode}).`);
+        if (config2.fallbackModel && config2.maxRequests >= 2 && !customProvider && (primaryCode.includes("429") || primaryCode.includes("503"))) {
+          SafeLogger.info(`Attempting fallback model: "${config2.fallbackModel}" for thread reply...`);
+          try {
+            const fallbackProvider = createProvider({
+              ...config2,
+              model: config2.fallbackModel
+            });
+            const fallbackResult = await fallbackProvider.review(threadInput, abortController2.signal);
+            replyExplanation = fallbackResult.summary;
+            if (fallbackResult.usage?.inputTokens) inputTokens = fallbackResult.usage.inputTokens;
+            if (fallbackResult.usage?.outputTokens) outputTokens = fallbackResult.usage.outputTokens;
+            threadReviewSucceeded = true;
+          } catch (fallbackErr) {
+            const fallbackCode = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+            SafeLogger.error(`Fallback model "${config2.fallbackModel}" also failed during thread reply (${fallbackCode}).`);
+          }
+        }
+        if (!threadReviewSucceeded) {
+          SafeLogger.error(`Failed to generate thread explanation from AI provider (${primaryCode}).`);
+          return finish({ status: "partial", reasonCode: "provider_thread_reply_failed", reviewedFiles: 1, publishedFindings: 0 });
+        }
       } finally {
         clearTimeout(timeout2);
       }

@@ -104,3 +104,51 @@ describe('Review regression protections', () => {
     await expect(new HttpProvider('gemini', { apiKey: 'key', model: 'test' }).review(input, new AbortController().signal)).rejects.toThrow('incomplete_response');
   });
 });
+
+describe('Thread reply flexibility and resilience', () => {
+  const threadInput = {
+    files: [{ path: 'app/api/route.ts', patch: '@@ -1 +1 @@\n+console.log(1)' }],
+    language: 'English',
+    maxFindings: 0,
+    threadContext: {
+      comment: 'y this needed updated ?',
+      originalFinding: 'Remove console.log',
+      diffHunk: '+console.log(1)',
+    },
+  };
+
+  it('accepts Gemini thread reply with explanation key and no findings array', async () => {
+    const text = JSON.stringify({ explanation: 'console.log should be removed before merging to production.' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ finishReason: 'STOP', content: { parts: [{ text }] } }],
+      usageMetadata: { promptTokenCount: 15, candidatesTokenCount: 10 },
+    }))));
+
+    const provider = new HttpProvider('gemini', { apiKey: 'key', model: 'test' });
+    const result = await provider.review(threadInput, new AbortController().signal);
+    expect(result.summary).toBe('console.log should be removed before merging to production.');
+    expect(result.findings).toEqual([]);
+  });
+
+  it('accepts thread reply formatted as plain text directly', async () => {
+    const text = 'Removing console.log is recommended to keep server logs clean.';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ finishReason: 'STOP', content: { parts: [{ text }] } }],
+    }))));
+
+    const provider = new HttpProvider('gemini', { apiKey: 'key', model: 'test' });
+    const result = await provider.review(threadInput, new AbortController().signal);
+    expect(result.summary).toBe(text);
+  });
+
+  it('accepts Gemini thread reply even when finishReason is MAX_TOKENS', async () => {
+    const text = JSON.stringify({ summary: 'This is a valid explanation that completed before cutoff.' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text }] } }],
+    }))));
+
+    const provider = new HttpProvider('gemini', { apiKey: 'key', model: 'test' });
+    const result = await provider.review(threadInput, new AbortController().signal);
+    expect(result.summary).toBe('This is a valid explanation that completed before cutoff.');
+  });
+});

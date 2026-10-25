@@ -10,7 +10,13 @@ Action's logs, review comments, and plain-language suggestions.
 
 ## Current state
 
-- Released GitHub Action: `v0.2.19` (tested and bundled in `dist/index.js`).
+- Released GitHub Action: `v0.2.20` (tested and bundled in `dist/index.js`).
+- Thread Discussion & Q&A Resilience:
+  - Added flexible response parsing for thread replies: gracefully handles models omitting `findings: []`, returning `{ "explanation": "..." }`, `{ "answer": "..." }`, or direct plain text.
+  - Optimized output token budgeting (`Math.max(limit, 4000)`) and minimal thinking effort for thread questions to prevent thinking token exhaustion.
+  - Allowed thread reply parsing on Gemini `MAX_TOKENS` finishReason.
+  - Integrated `fallbackModel` support for inline review comment threads on upstream rate/capacity errors.
+  - Surfaced explicit error codes in logs when thread reply generation encounters an issue.
 - Enhanced PR summary aesthetics and file exclusion:
   - Eliminated awkward stacked alert boxes (`> [!TIP]` followed by `> [!NOTE]`) and double warning emojis.
   - Added dedicated Model Not Found (HTTP 404) and Authentication (HTTP 401/403) recovery guidance.

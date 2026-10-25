@@ -392,14 +392,39 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       const timeout = setTimeout(() => abortController.abort(), 60000);
       let replyExplanation: string | undefined;
 
+      let threadReviewSucceeded = false;
       try {
         const result = await provider.review(threadInput, abortController.signal);
         replyExplanation = result.summary;
         if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;
         if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
+        threadReviewSucceeded = true;
       } catch (err: unknown) {
-        SafeLogger.error('Failed to generate thread explanation from AI provider.');
-        return finish({ status: 'partial', reasonCode: 'provider_thread_reply_failed', reviewedFiles: 1, publishedFindings: 0 });
+        const primaryCode = err instanceof Error ? err.message : String(err);
+        SafeLogger.warning(`Primary model "${config.model}" failed during thread reply (${primaryCode}).`);
+
+        if (config.fallbackModel && config.maxRequests >= 2 && !customProvider && (primaryCode.includes('429') || primaryCode.includes('503'))) {
+          SafeLogger.info(`Attempting fallback model: "${config.fallbackModel}" for thread reply...`);
+          try {
+            const fallbackProvider = createProvider({
+              ...config,
+              model: config.fallbackModel,
+            });
+            const fallbackResult = await fallbackProvider.review(threadInput, abortController.signal);
+            replyExplanation = fallbackResult.summary;
+            if (fallbackResult.usage?.inputTokens) inputTokens = fallbackResult.usage.inputTokens;
+            if (fallbackResult.usage?.outputTokens) outputTokens = fallbackResult.usage.outputTokens;
+            threadReviewSucceeded = true;
+          } catch (fallbackErr: unknown) {
+            const fallbackCode = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+            SafeLogger.error(`Fallback model "${config.fallbackModel}" also failed during thread reply (${fallbackCode}).`);
+          }
+        }
+
+        if (!threadReviewSucceeded) {
+          SafeLogger.error(`Failed to generate thread explanation from AI provider (${primaryCode}).`);
+          return finish({ status: 'partial', reasonCode: 'provider_thread_reply_failed', reviewedFiles: 1, publishedFindings: 0 });
+        }
       } finally {
         clearTimeout(timeout);
       }
