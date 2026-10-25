@@ -1,4 +1,4 @@
-# AI Code Review Action
+# ReviewPilot AI - Intelligent PR Code Review & Q&A
 
 A TypeScript GitHub Action for bounded, advisory pull-request feedback. Supports Gemini, OpenAI, Anthropic Claude, and Ollama through a shared HTTP transport, plus a deterministic fake provider for tests.
 

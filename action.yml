@@ -1,8 +1,8 @@
-name: 'AI Code Review'
-description: 'Bounded, comment-only AI feedback on pull requests using Gemini and a provider-neutral interface'
-author: 'AI Code Review Contributors'
+name: 'ReviewPilot AI - Intelligent PR Code Review & Q&A'
+description: 'Intelligent, bounded, comment-only AI feedback on pull requests with thread Q&A using Gemini, OpenAI, Anthropic, or Ollama'
+author: 'Ananthang'
 branding:
-  icon: 'code'
+  icon: 'navigation'
   color: 'purple'
 
 inputs:
