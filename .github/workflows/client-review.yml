@@ -1,0 +1,114 @@
+name: AI Code Review Reusable Workflow
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        description: 'AI provider name (gemini, openai, anthropic, ollama)'
+        required: false
+        type: string
+        default: 'gemini'
+      model:
+        description: 'Explicit model identifier for the selected provider'
+        required: false
+        type: string
+        default: ''
+      fallback-model:
+        description: 'Fallback model identifier on rate-limit (HTTP 429) or capacity errors (HTTP 503)'
+        required: false
+        type: string
+        default: ''
+      allow-external-provider:
+        description: 'Explicit opt-in to transmit diffs to external AI APIs'
+        required: false
+        type: boolean
+        default: true
+      thinking-level:
+        description: 'Thinking / reasoning depth: minimal, low, medium, high'
+        required: false
+        type: string
+        default: 'low'
+      custom-instructions:
+        description: 'Custom review guidelines or inline instructions'
+        required: false
+        type: string
+        default: ''
+      fail-on-error:
+        description: 'Fail the GitHub Actions step if the AI review encounters an error'
+        required: false
+        type: boolean
+        default: false
+      max-files:
+        description: 'Maximum number of changed files to review'
+        required: false
+        type: string
+        default: '20'
+      max-findings:
+        description: 'Maximum inline findings to publish per run'
+        required: false
+        type: string
+        default: '5'
+      review-language:
+        description: 'Natural language for review feedback'
+        required: false
+        type: string
+        default: 'English'
+    secrets:
+      provider-api-key:
+        description: 'API key for the external AI provider'
+        required: false
+      github-token:
+        description: 'GitHub token for API calls (defaults to caller GITHUB_TOKEN)'
+        required: false
+
+jobs:
+  preflight:
+    name: Preflight Eligibility Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      eligible: ${{ steps.check.outputs.eligible }}
+      operation: ${{ steps.check.outputs.operation }}
+      pull-number: ${{ steps.check.outputs.pull-number }}
+      reason-code: ${{ steps.check.outputs.reason-code }}
+    steps:
+      - name: Check Trigger Eligibility & Authorization
+        id: check
+        uses: Ananthang/ai-code-review@v1
+        with:
+          github-token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
+          preflight: 'true'
+
+  review:
+    name: Run AI Review
+    needs: preflight
+    if: needs.preflight.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ai-review-${{ github.repository }}-${{ needs.preflight.outputs.pull-number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Run AI Code Review
+        uses: Ananthang/ai-code-review@v1
+        with:
+          github-token: ${{ secrets.github-token || secrets.GITHUB_TOKEN }}
+          provider: ${{ inputs.provider }}
+          model: ${{ inputs.model }}
+          fallback-model: ${{ inputs.fallback-model }}
+          allow-external-provider: ${{ inputs.allow-external-provider && 'true' || 'false' }}
+          thinking-level: ${{ inputs.thinking-level }}
+          custom-instructions: ${{ inputs.custom-instructions }}
+          fail-on-error: ${{ inputs.fail-on-error && 'true' || 'false' }}
+          max-files: ${{ inputs.max-files }}
+          max-findings: ${{ inputs.max-findings }}
+          review-language: ${{ inputs.review-language }}
+          provider-api-key: ${{ secrets.provider-api-key }}

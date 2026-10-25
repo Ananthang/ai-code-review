@@ -21,6 +21,41 @@ For client repositories, choose between two update models:
 - **Maintained moving tag (`@v1`)**: Automatically receive compatible enhancements and bug fixes without editing workflow files.
 - **Audited SHA pin (`@<commit-sha>`)**: Guarantee absolute immutability for strict enterprise compliance.
 
+### Option 1: Simplified Reusable Workflow (Recommended)
+
+Eliminates complex `if:` expressions, manual concurrency definitions, and code checkouts. The reusable workflow runs a fast read-only preflight check before starting the review job:
+
+```yaml
+name: AI Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    uses: Ananthang/ai-code-review/.github/workflows/client-review.yml@v1
+    with:
+      provider: ${{ vars.AI_PROVIDER || 'gemini' }}
+      model: ${{ vars.AI_MODEL }}
+      allow-external-provider: true
+    secrets:
+      provider-api-key: ${{ secrets.AI_PROVIDER_API_KEY }}
+```
+
+### Option 2: Direct Action Step (Advanced)
+
+For workflows requiring custom runners, multi-step orchestration, or custom checkout steps:
+
 ```yaml
 name: AI Code Review
 on:
@@ -36,7 +71,7 @@ permissions:
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   review:

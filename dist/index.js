@@ -48015,6 +48015,83 @@ var SafeLogger = class {
   }
 };
 
+// src/github/classifier.ts
+function classifyEvent(event) {
+  if (event.senderType === "Bot" || event.senderLogin?.endsWith("[bot]")) {
+    return { eligible: false, reasonCode: "bot_event_ignored" };
+  }
+  if (event.eventName === "pull_request") {
+    const allowedActions = ["opened", "synchronize", "reopened"];
+    if (!event.action || !allowedActions.includes(event.action)) {
+      return { eligible: false, reasonCode: "unsupported_pr_action" };
+    }
+    if (event.isFork) {
+      return { eligible: false, reasonCode: "fork_pr_skipped" };
+    }
+    if (event.isDraft) {
+      return { eligible: false, reasonCode: "draft_pr_skipped" };
+    }
+    return { eligible: true, operation: "review_pr" };
+  }
+  if (event.eventName === "issue_comment") {
+    if (!event.isPullRequest) {
+      return { eligible: false, reasonCode: "comment_not_a_trigger" };
+    }
+    if (event.action !== "created") {
+      return { eligible: false, reasonCode: "unsupported_comment_action" };
+    }
+    if (event.isFork) {
+      return { eligible: false, reasonCode: "fork_pr_skipped" };
+    }
+    if (event.isDraft) {
+      return { eligible: false, reasonCode: "draft_pr_skipped" };
+    }
+    const comment = (event.commentBody || "").trim();
+    const parts = comment.split(/\s+/);
+    const command = parts[0]?.toLowerCase();
+    if (!command || !["/review", "/ai-review", "/recheck"].includes(command)) {
+      return { eligible: false, reasonCode: "comment_not_a_trigger" };
+    }
+    if (parts.length === 1) {
+      return { eligible: true, operation: "review_pr" };
+    }
+    if (parts.length === 2) {
+      const target = parts[1];
+      if (target.startsWith("-") || /[\x00-\x1f]/.test(target)) {
+        return { eligible: false, reasonCode: "invalid_command_arguments" };
+      }
+      return { eligible: true, operation: "review_pr", targetFile: target };
+    }
+    return { eligible: false, reasonCode: "invalid_command_arguments" };
+  }
+  if (event.eventName === "pull_request_review_comment") {
+    if (event.action !== "created") {
+      return { eligible: false, reasonCode: "unsupported_comment_action" };
+    }
+    if (event.isFork) {
+      return { eligible: false, reasonCode: "fork_pr_skipped" };
+    }
+    if (event.isDraft) {
+      return { eligible: false, reasonCode: "draft_pr_skipped" };
+    }
+    const comment = (event.commentBody || "").trim();
+    if (!comment) {
+      return { eligible: false, reasonCode: "comment_not_a_trigger" };
+    }
+    const isExplicitCommand = /^\/(?:review|ai-review|ask|explain|why|recheck)(?:\s+.*)?$/i.test(comment);
+    if (!isExplicitCommand) {
+      return { eligible: false, reasonCode: "comment_not_a_trigger" };
+    }
+    const cleanedQuestion = comment.replace(/^\/(?:review|ai-review|ask|explain|why|recheck)\s*/i, "").trim();
+    return {
+      eligible: true,
+      operation: "reply_to_thread",
+      cleanedQuestion: cleanedQuestion || "Please explain this finding and how to address it."
+    };
+  }
+  return { eligible: false, reasonCode: "unsupported_event" };
+}
+
 // src/index.ts
 function getOutcomeDetails(status, reasonCode) {
   switch (reasonCode) {
@@ -48045,8 +48122,28 @@ function getOutcomeDetails(status, reasonCode) {
       };
     case "unsupported_event":
       return {
-        explanation: "The workflow was triggered by an event other than pull_request or issue_comment.",
-        nextStep: "Ensure workflow triggers include pull_request and issue_comment."
+        explanation: "The workflow was triggered by an event other than pull_request, issue_comment, or pull_request_review_comment.",
+        nextStep: "Ensure workflow triggers include pull_request, issue_comment, or pull_request_review_comment."
+      };
+    case "unsupported_comment_action":
+      return {
+        explanation: "Only newly created comments trigger reviews; edited or deleted comments are ignored.",
+        nextStep: "Post a new comment with /review to trigger a review."
+      };
+    case "bot_event_ignored":
+      return {
+        explanation: "Automated bot comments and events are ignored to prevent review feedback loops.",
+        nextStep: "Only human collaborators can trigger on-demand reviews."
+      };
+    case "invalid_command_arguments":
+      return {
+        explanation: "Review command contains extra or invalid arguments.",
+        nextStep: 'Use "/review" for a full PR review, or "/review <path>" for a single file.'
+      };
+    case "preflight_eligible":
+      return {
+        explanation: "Preflight check confirmed pull request eligibility and actor permissions.",
+        nextStep: "Proceeding to review job."
       };
     case "external_provider_opt_in_required":
       return {
@@ -48175,17 +48272,60 @@ async function runReview(customClient, customProvider) {
     return result;
   };
   try {
+    const isPreflight = ["true", "1", "yes"].includes(getInput("preflight").trim().toLowerCase());
+    const rawGithubToken = getInput("github-token") || process.env.GITHUB_TOKEN || "";
+    if (rawGithubToken) {
+      SafeLogger.registerSecret(rawGithubToken);
+    }
+    const client = customClient ?? new OctokitGitHubClient(rawGithubToken);
+    const prDetails = await client.getPullRequestDetails();
+    const classification = classifyEvent({
+      eventName: prDetails.eventName,
+      action: prDetails.action,
+      isPullRequest: Boolean(prDetails.pullNumber),
+      commentBody: prDetails.commentBody,
+      isDraft: prDetails.isDraft,
+      isFork: prDetails.isFork
+    });
+    if (!classification.eligible) {
+      status = "skipped";
+      reasonCode = classification.reasonCode || "comment_not_a_trigger";
+      if (isPreflight) {
+        setOutput("eligible", "false");
+        setOutput("pull-number", String(prDetails.pullNumber || 0));
+        setOutput("reason-code", reasonCode);
+      }
+      SafeLogger.info(`Skipping PR #${prDetails.pullNumber || 0}: ${reasonCode}`);
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+    }
+    if ((prDetails.eventName === "issue_comment" || prDetails.eventName === "pull_request_review_comment") && !prDetails.mayTriggerReview) {
+      status = "skipped";
+      reasonCode = "comment_trigger_not_authorized";
+      if (isPreflight) {
+        setOutput("eligible", "false");
+        setOutput("pull-number", String(prDetails.pullNumber || 0));
+        setOutput("reason-code", reasonCode);
+      }
+      SafeLogger.warning(`Skipping PR #${prDetails.pullNumber || 0}: comment author is not authorized to trigger reviews`);
+      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+    }
+    if (isPreflight) {
+      setOutput("eligible", "true");
+      setOutput("operation", classification.operation || "review_pr");
+      setOutput("pull-number", String(prDetails.pullNumber || 0));
+      setOutput("reason-code", "preflight_eligible");
+      SafeLogger.info(`Preflight eligibility check passed: PR #${prDetails.pullNumber} eligible for ${classification.operation}`);
+      return finish({ status: "completed", reasonCode: "preflight_eligible", reviewedFiles: 0, publishedFindings: 0 });
+    }
+    if (classification.targetFile) {
+      prDetails.targetFile = classification.targetFile;
+    }
     SafeLogger.startGroup("Setup & Configuration");
     const config2 = parseConfig();
     failOnError = config2.failOnError;
     if (config2.providerApiKey) {
       SafeLogger.registerSecret(config2.providerApiKey);
     }
-    if (config2.githubToken) {
-      SafeLogger.registerSecret(config2.githubToken);
-    }
-    const client = customClient ?? new OctokitGitHubClient(config2.githubToken);
-    const prDetails = await client.getPullRequestDetails();
     SafeLogger.info(`Target: PR #${prDetails.pullNumber} on ${prDetails.owner}/${prDetails.repo}`);
     SafeLogger.info(`Provider: ${config2.provider} | Model: ${config2.model || "default"} | Fallback: ${config2.fallbackModel || "none"}`);
     SafeLogger.info(`Budgets: max-files=${config2.maxFiles}, max-file-bytes=${config2.maxFileBytes}, max-input-tokens=${config2.maxInputTokens}, max-requests=${config2.maxRequests}`);
@@ -48197,57 +48337,6 @@ async function runReview(customClient, customProvider) {
     SafeLogger.endGroup();
     SafeLogger.startGroup("Security & Authorization");
     SafeLogger.info(`Event: ${prDetails.eventName} | Action: ${prDetails.action} | Base SHA: ${prDetails.baseSha.slice(0, 7)} | Head SHA: ${prDetails.headSha.slice(0, 7)}`);
-    if (prDetails.eventName === "issue_comment") {
-      const comment = (prDetails.commentBody || "").trim().toLowerCase();
-      const isReviewTrigger = /^\/(?:review|ai-review|recheck)(?:\s+.*)?$/i.test(comment);
-      if (!isReviewTrigger) {
-        status = "skipped";
-        reasonCode = "comment_not_a_trigger";
-        SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: comment is not a review trigger command`);
-        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
-      }
-      if (prDetails.action !== "created" || !prDetails.mayTriggerReview) {
-        SafeLogger.warning(`Skipping PR #${prDetails.pullNumber}: comment author is not authorized to trigger reviews`);
-        return finish({ status: "skipped", reasonCode: "comment_trigger_not_authorized", reviewedFiles: 0, publishedFindings: 0 });
-      }
-    } else if (prDetails.eventName === "pull_request_review_comment") {
-      const comment = (prDetails.commentBody || "").trim();
-      const isReviewTrigger = /^\/(?:review|ai-review|ask|explain|why|recheck)(?:\s+.*)?$/i.test(comment) || Boolean(prDetails.inReplyToId);
-      if (!isReviewTrigger) {
-        status = "skipped";
-        reasonCode = "comment_not_a_trigger";
-        SafeLogger.info(`Skipping review comment #${prDetails.reviewCommentId}: comment is not a review trigger command`);
-        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
-      }
-      if (prDetails.action !== "created" || !prDetails.mayTriggerReview) {
-        SafeLogger.warning(`Skipping review comment #${prDetails.reviewCommentId}: author not authorized to trigger reviews`);
-        return finish({ status: "skipped", reasonCode: "comment_trigger_not_authorized", reviewedFiles: 0, publishedFindings: 0 });
-      }
-    } else {
-      if (prDetails.eventName !== "pull_request") {
-        SafeLogger.warning(`Skipping: event '${prDetails.eventName}' is not supported`);
-        return finish({ status: "skipped", reasonCode: "unsupported_event", reviewedFiles: 0, publishedFindings: 0 });
-      }
-      const allowedActions = ["opened", "synchronize", "reopened"];
-      if (!allowedActions.includes(prDetails.action)) {
-        status = "skipped";
-        reasonCode = "unsupported_pr_action";
-        SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: action '${prDetails.action}' is not reviewed`);
-        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
-      }
-    }
-    if (prDetails.isFork) {
-      status = "skipped";
-      reasonCode = "fork_pr_skipped";
-      SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: fork pull requests are excluded for security`);
-      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
-    }
-    if (prDetails.isDraft) {
-      status = "skipped";
-      reasonCode = "draft_pr_skipped";
-      SafeLogger.info(`Skipping PR #${prDetails.pullNumber}: draft pull requests are excluded`);
-      return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
-    }
     const effectiveProvider = customProvider ? customProvider.name : config2.provider;
     if (["gemini", "openai", "anthropic"].includes(effectiveProvider)) {
       if (!config2.allowExternalProvider) {

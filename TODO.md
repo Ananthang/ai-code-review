@@ -10,7 +10,10 @@ Action's logs, review comments, and plain-language suggestions.
 
 ## Current state
 
-- Released GitHub Action: `v0.2.16` (tested and bundled in `dist/index.js`).
+- Released GitHub Action: `v0.2.17` (tested and bundled in `dist/index.js`).
+- Centrally maintained Reusable Workflow (`.github/workflows/client-review.yml@v1`): enables
+  single-block client setup with zero `if:` statements, automated preflight eligibility checks,
+  and safe non-interrupting PR concurrency.
 - Implemented: file-patch incremental review, bounded JS/TS import context,
   exact-line evidence checks, severity filtering, and review-only guards.
 - Implementation audit fixes (2026-10-25): mandatory path exclusion screening & size limits for

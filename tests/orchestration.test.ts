@@ -716,3 +716,113 @@ describe('Incremental review integration', () => {
     } else expect(result.reasonCode).toBe('all_files_exceeded_budgets');
   });
 });
+
+describe('Preflight Mode (Fast Read-Only Eligibility & Dispatch)', () => {
+  beforeEach(() => {
+    vi.stubEnv('INPUT_PREFLIGHT', 'true');
+    vi.stubEnv('GITHUB_TOKEN', 'test_gh_token');
+    // Ensure no provider API key is set to verify zero external credentials needed
+    vi.unstubAllEnvs();
+    vi.stubEnv('INPUT_PREFLIGHT', 'true');
+    vi.stubEnv('GITHUB_TOKEN', 'test_gh_token');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('confirms eligibility for standard pull_request event without requiring AI key', async () => {
+    const setOutputSpy = vi.spyOn(core, 'setOutput');
+    const client = new MockGitHubClient();
+    client.prDetails = {
+      owner: 'testowner',
+      repo: 'testrepo',
+      pullNumber: 99,
+      baseSha: 'base123',
+      headSha: 'head123',
+      isDraft: false,
+      isFork: false,
+      action: 'opened',
+      eventName: 'pull_request',
+    };
+
+    const outcome = await runReview(client);
+    expect(outcome.status).toBe('completed');
+    expect(outcome.reasonCode).toBe('preflight_eligible');
+    expect(setOutputSpy).toHaveBeenCalledWith('eligible', 'true');
+    expect(setOutputSpy).toHaveBeenCalledWith('operation', 'review_pr');
+    expect(setOutputSpy).toHaveBeenCalledWith('pull-number', '99');
+  });
+
+  it('rejects irrelevant comments in preflight without provider key or failure', async () => {
+    const setOutputSpy = vi.spyOn(core, 'setOutput');
+    const client = new MockGitHubClient();
+    client.prDetails = {
+      owner: 'testowner',
+      repo: 'testrepo',
+      pullNumber: 99,
+      baseSha: 'base123',
+      headSha: 'head123',
+      isDraft: false,
+      isFork: false,
+      action: 'created',
+      eventName: 'issue_comment',
+      commentBody: 'LGTM!',
+    };
+
+    const outcome = await runReview(client);
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('comment_not_a_trigger');
+    expect(setOutputSpy).toHaveBeenCalledWith('eligible', 'false');
+    expect(setOutputSpy).toHaveBeenCalledWith('reason-code', 'comment_not_a_trigger');
+  });
+
+  it('rejects unauthorized comments in preflight', async () => {
+    const setOutputSpy = vi.spyOn(core, 'setOutput');
+    const client = new MockGitHubClient();
+    client.prDetails = {
+      owner: 'testowner',
+      repo: 'testrepo',
+      pullNumber: 99,
+      baseSha: 'base123',
+      headSha: 'head123',
+      isDraft: false,
+      isFork: false,
+      action: 'created',
+      eventName: 'issue_comment',
+      commentBody: '/review',
+      mayTriggerReview: false,
+    };
+
+    const outcome = await runReview(client);
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('comment_trigger_not_authorized');
+    expect(setOutputSpy).toHaveBeenCalledWith('eligible', 'false');
+    expect(setOutputSpy).toHaveBeenCalledWith('reason-code', 'comment_trigger_not_authorized');
+  });
+
+  it('approves authorized thread replies in preflight with reply_to_thread operation', async () => {
+    const setOutputSpy = vi.spyOn(core, 'setOutput');
+    const client = new MockGitHubClient();
+    client.prDetails = {
+      owner: 'testowner',
+      repo: 'testrepo',
+      pullNumber: 99,
+      baseSha: 'base123',
+      headSha: 'head123',
+      isDraft: false,
+      isFork: false,
+      action: 'created',
+      eventName: 'pull_request_review_comment',
+      commentBody: '/ask why did you recommend this change?',
+      mayTriggerReview: true,
+    };
+
+    const outcome = await runReview(client);
+    expect(outcome.status).toBe('completed');
+    expect(outcome.reasonCode).toBe('preflight_eligible');
+    expect(setOutputSpy).toHaveBeenCalledWith('eligible', 'true');
+    expect(setOutputSpy).toHaveBeenCalledWith('operation', 'reply_to_thread');
+    expect(setOutputSpy).toHaveBeenCalledWith('pull-number', '99');
+  });
+});

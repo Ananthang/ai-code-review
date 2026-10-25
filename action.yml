@@ -107,8 +107,18 @@ inputs:
     description: 'Optional upgrade notice banner to alert developers on PR summaries and workflow annotations'
     required: false
     default: ''
+  preflight:
+    description: 'Run lightweight preflight check to determine eligibility without requiring provider credentials (true/false)'
+    required: false
+    default: 'false'
 
 outputs:
+  eligible:
+    description: 'Whether the event is eligible to proceed to review (true/false)'
+  operation:
+    description: 'The classified review operation: review_pr or reply_to_thread'
+  pull-number:
+    description: 'The target pull request number'
   status:
     description: 'Review outcome status: completed, partial, skipped, or failed'
   reason-code:
