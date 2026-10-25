@@ -39,9 +39,13 @@ export const ConfigSchema = z.object({
   }),
   staticReportPaths: z.array(z.string()).default([]),
   failOnError: z.boolean().default(false),
-  thinkingLevel: z.enum(['minimal', 'low', 'medium', 'high']).default('medium'),
+  thinkingLevel: z.enum(['minimal', 'low', 'medium', 'high']).default('low'),
   customInstructions: z.string().optional(),
   fallbackModel: z.string().default(''),
+  incremental: z.boolean().default(true),
+  maxContextBytes: z.number().int().min(0).max(8192).default(2048),
+  minSeverity: z.enum(['critical', 'high', 'medium', 'low']).default('medium'),
+  requireEvidence: z.boolean().default(true),
 });
 
 function parseSplitLines(raw: string): string[] {
@@ -209,11 +213,11 @@ export function parseConfig(overrides?: Partial<Config>, workspaceRoot?: string)
   const maxFiles = overrides?.maxFiles ?? parseNumberInput(core.getInput('max-files'), 20);
   const maxFileBytes = overrides?.maxFileBytes ?? parseNumberInput(core.getInput('max-file-bytes'), 20 * 1024);
   const maxInputBytes = overrides?.maxInputBytes ?? parseNumberInput(core.getInput('max-input-bytes'), 80 * 1024);
-  const maxInputTokens = overrides?.maxInputTokens ?? parseNumberInput(core.getInput('max-input-tokens'), 24000);
-  const maxOutputTokens = overrides?.maxOutputTokens ?? parseNumberInput(core.getInput('max-output-tokens'), 4000);
-  const maxRequestsDefault = fallbackModel ? 2 : 1;
+  const maxInputTokens = overrides?.maxInputTokens ?? parseNumberInput(core.getInput('max-input-tokens'), 12000);
+  const maxOutputTokens = overrides?.maxOutputTokens ?? parseNumberInput(core.getInput('max-output-tokens'), 2000);
+  const maxRequestsDefault = 1;
   const maxRequests = overrides?.maxRequests ?? parseNumberInput(core.getInput('max-requests'), maxRequestsDefault);
-  const maxFindings = overrides?.maxFindings ?? parseNumberInput(core.getInput('max-findings'), 10);
+  const maxFindings = overrides?.maxFindings ?? parseNumberInput(core.getInput('max-findings'), 5);
 
   const reviewLanguage = (overrides?.reviewLanguage ?? (core.getInput('review-language') || 'English')).trim();
   const modeRaw = (overrides?.mode ?? (core.getInput('mode') || 'comment')).trim();
@@ -228,12 +232,12 @@ export function parseConfig(overrides?: Partial<Config>, workspaceRoot?: string)
     (core.getInput('thinking-level') ||
       core.getInput('thinking-effort') ||
       core.getInput('effort') ||
-      'medium')
+      'low')
   ).trim().toLowerCase();
 
   const thinkingLevel = ['minimal', 'low', 'medium', 'high'].includes(rawThinkingLevel)
     ? (rawThinkingLevel as 'minimal' | 'low' | 'medium' | 'high')
-    : 'medium';
+    : 'low';
 
   const rawCustomInstructions = overrides?.customInstructions !== undefined
     ? overrides.customInstructions
@@ -270,6 +274,10 @@ export function parseConfig(overrides?: Partial<Config>, workspaceRoot?: string)
     thinkingLevel,
     customInstructions,
     fallbackModel,
+    incremental: overrides?.incremental ?? parseBooleanInput(core.getInput('incremental'), true),
+    maxContextBytes: overrides?.maxContextBytes ?? parseNumberInput(core.getInput('max-context-bytes'), 2048),
+    minSeverity: overrides?.minSeverity ?? (core.getInput('min-severity') || 'medium'),
+    requireEvidence: overrides?.requireEvidence ?? parseBooleanInput(core.getInput('require-evidence'), true),
   };
 
   const parsed = ConfigSchema.safeParse(rawConfig);

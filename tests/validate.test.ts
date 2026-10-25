@@ -31,7 +31,7 @@ describe('Validation and sanitization of findings', () => {
     expect(validFindings[0].line).toBe(5);
   });
 
-  it('tolerates minor off-by-one line difference and normalizes leading slashes in path', () => {
+  it('rejects approximate paths and nearby lines', () => {
     const raw = [
       {
         path: './src/app.ts', // leading ./
@@ -43,10 +43,8 @@ describe('Validation and sanitization of findings', () => {
     ];
 
     const { validFindings, droppedFindings } = validateAndFilterFindings(raw, { filePatchMap });
-    expect(validFindings).toHaveLength(1);
-    expect(droppedFindings).toHaveLength(0);
-    expect(validFindings[0].path).toBe('src/app.ts');
-    expect(validFindings[0].line).toBe(5);
+    expect(validFindings).toHaveLength(0);
+    expect(droppedFindings).toHaveLength(1);
   });
 
   it('rejects finding on a line not in addedLines set', () => {

@@ -45,7 +45,7 @@ The adapter uses non-streaming JSON output, `num_predict` for the output cap, an
 
 ## Shared controls
 
-- Exactly one generation HTTP request per adapter invocation, with no SDK retry or redirect. The run defaults to one request total. An explicit `fallback-model` plus `max-requests: 2` permits one additional attempt on HTTP 429; HTTP 503 is not retried.
+- Exactly one generation HTTP request per adapter invocation, with no SDK retry or redirect. The run defaults to one request total. An explicit `fallback-model` plus `max-requests: 2` permits one additional attempt on HTTP 429 or 503; there are no transport retries.
 - Whole-file selection measures the serialized request body, including prompts and provider envelope; the transport rechecks it before sending.
 - A deliberately conservative one-token-per-UTF-8-byte input guard replaces the previous optimistic 3.5-byte estimate. It may skip more files; reported provider usage supersedes the estimate when available. It is not an invoice or a strict monetary budget.
 - Native fetch receives the abort signal. Responses are limited to 1 MiB and schema findings to 50. Incomplete/truncated or invalid responses fail review rather than implying clean code.

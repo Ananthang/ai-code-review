@@ -28,6 +28,9 @@ export interface SummaryData {
   findingsList?: Finding[];
   fallbackFromModel?: string;
   fallbackReason?: string;
+  checkpoint?: string;
+  incrementalSkipped?: number;
+  contextFiles?: number;
 }
 
 const SEVERITY_ICONS: Record<Severity, string> = {
@@ -232,6 +235,8 @@ export function formatSummaryComment(data: SummaryData): string {
   lines.push('> It does not certify security, guarantee defect-free code, or replace human review.');
   lines.push('');
   lines.push(SUMMARY_MARKER);
+  lines.push(`Incremental: ${data.incrementalSkipped ?? 0} unchanged file(s) skipped. Related context: ${data.contextFiles ?? 0} file(s).`);
+  if (data.status === 'completed' && data.checkpoint) lines.push(data.checkpoint);
 
   return lines.join('\n');
 }

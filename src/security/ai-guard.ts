@@ -25,6 +25,7 @@ export function assertReviewOnlyInput(input: {
   language: string;
   files: ReadonlyArray<{ path: string; patch: string }>;
   customInstructions?: string;
+  relatedContext?: ReadonlyArray<{ path: string; content: string }>;
 }): void {
   if (!/^[\p{L}\p{M} -]{1,64}$/u.test(input.language) || hasPromptInjection(input.language)) {
     throw new Error('ai_guard_invalid_language');
@@ -32,6 +33,12 @@ export function assertReviewOnlyInput(input: {
   if (input.files.some((file) => hasPromptInjection(file.path + '\n' + file.patch))) {
     throw new Error('ai_guard_prompt_injection');
   }
+  const source = [...input.files.map(f => f.path + '\n' + f.patch),
+    ...(input.relatedContext ?? []).map(f => f.path + '\n' + f.content)];
+  if (source.some(text => CREDENTIAL_MARKERS.some(pattern => pattern.test(text)))) {
+    throw new Error('ai_guard_credential_marker');
+  }
+  if (source.some(hasPromptInjection)) throw new Error('ai_guard_prompt_injection');
   if (input.customInstructions && CREDENTIAL_MARKERS.some((pattern) => pattern.test(input.customInstructions!))) {
     throw new Error('ai_guard_credential_marker');
   }

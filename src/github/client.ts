@@ -47,6 +47,7 @@ export interface ReviewCommentPayload {
 }
 
 export interface GitHubClient {
+  fetchSourceFile?(path: string, sha: string, maxBytes: number): Promise<string | undefined>;
   getPullRequestDetails(): Promise<PullRequestDetails>;
   fetchPullRequestFiles(pullNumber: number): Promise<{ files: GitHubFile[]; isComplete: boolean }>;
   getHeadSha(pullNumber: number): Promise<string>;
@@ -78,6 +79,33 @@ export class OctokitGitHubClient implements GitHubClient {
     this.octokit = github.getOctokit(token, { request: { timeout: 15000 } });
     this.owner = owner || github.context.repo.owner;
     this.repo = repo || github.context.repo.repo;
+  }
+
+  public async fetchSourceFile(filePath: string, sha: string, maxBytes: number): Promise<string | undefined> {
+    if (!/^[a-f0-9]{40,64}$/.test(sha) || maxBytes <= 0 || maxBytes > 8192) return undefined;
+    const parts = filePath.split('/');
+    if (parts.length > 8 || parts.some(p => !p || p === '.' || p === '..') || /[\\\x00-\x1f]/.test(filePath)) return undefined;
+    // Walk immutable Git trees; symlinks and submodules are never followed.
+    let treeSha = sha;
+    for (let i = 0; i < parts.length; i++) {
+      const response = await this.octokit.rest.git.getTree({ owner: this.owner, repo: this.repo, tree_sha: treeSha });
+      if (response.data.truncated) return undefined;
+      const entry = response.data.tree.find(item => item.path === parts[i]);
+      if (!entry?.sha) return undefined;
+      if (i < parts.length - 1) {
+        if (entry.type !== 'tree' || entry.mode !== '040000') return undefined;
+        treeSha = entry.sha;
+      } else {
+        if (entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode ?? '') ||
+            entry.size === undefined || entry.size > maxBytes) return undefined;
+        const blob = await this.octokit.rest.git.getBlob({ owner: this.owner, repo: this.repo, file_sha: entry.sha });
+        if (blob.data.encoding !== 'base64' || blob.data.size == null || blob.data.size > maxBytes) return undefined;
+        const bytes = Buffer.from(blob.data.content, 'base64');
+        if (bytes.length > maxBytes) return undefined;
+        return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      }
+    }
+    return undefined;
   }
 
   public async getPullRequestDetails(): Promise<PullRequestDetails> {

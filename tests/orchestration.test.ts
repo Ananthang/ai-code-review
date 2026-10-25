@@ -176,6 +176,7 @@ describe('End-to-end review orchestration', () => {
       severity: 'high' as const,
       message: 'Unchecked dereference of optional user.profile',
       recommendation: 'Use optional chaining user?.profile?.email',
+      evidence: '  const email = user.profile.email.toLowerCase();',
     };
 
     const fakeProvider = new FakeProvider({ findings: [seededFinding] });
@@ -260,6 +261,7 @@ describe('End-to-end review orchestration', () => {
           severity: 'high',
           message: 'Bug found',
           recommendation: 'Fix bug',
+          evidence: '  const email = user.profile.email.toLowerCase();',
         },
       ],
     });
@@ -309,6 +311,7 @@ describe('End-to-end review orchestration', () => {
           severity: 'high',
           message: 'Bug found',
           recommendation: 'Fix bug',
+          evidence: '  const email = user.profile.email.toLowerCase();',
         },
       ],
     });
@@ -382,7 +385,7 @@ describe('Review safety regressions', () => {
     client.files = [{ filename: 'src/user.ts', status: 'modified', patch: BUGGY_PATCH, changes: 4, additions: 3, deletions: 1 }];
     return client;
   };
-  const finding = { path: 'src/user.ts', line: 3, severity: 'high' as const, message: 'Bug', recommendation: 'Fix' };
+  const finding = { path: 'src/user.ts', line: 3, severity: 'high' as const, message: 'Bug', recommendation: 'Fix', evidence: '  const email = user.profile.email.toLowerCase();' };
   it('does not allow an untrusted commenter to spend provider quota', async () => {
     const client = prepare();
     Object.assign(client.prDetails, { eventName: 'issue_comment', action: 'created', commentBody: '/review', mayTriggerReview: false });
@@ -652,5 +655,64 @@ describe('Seven-issue regression coverage', () => {
     const client = ready(); client.fetchPullRequestFiles = async () => { throw new Error('synthetic'); };
     expect((await runReview(client, new FakeProvider())).status).toBe('failed');
     expect(failed).not.toHaveBeenCalled();
+  });
+});
+
+describe('Incremental review integration', () => {
+  beforeEach(() => {
+    vi.stubEnv('GITHUB_TOKEN', 'test'); vi.stubEnv('AI_MODEL', 'test');
+    vi.stubEnv('INPUT_CUSTOM-INSTRUCTIONS', 'none');
+    vi.stubEnv('INPUT_INCREMENTAL', 'true'); vi.stubEnv('INPUT_REQUIRE-EVIDENCE', 'true');
+  });
+  afterEach(() => vi.unstubAllEnvs());
+  const prepareIncremental = () => {
+    const client = new MockGitHubClient();
+    client.files = [{ filename: 'src/user.ts', status: 'modified', patch: BUGGY_PATCH, changes: 4, additions: 3, deletions: 1 }];
+    return client;
+  };
+  const saveSummary = (client: MockGitHubClient) => {
+    client.issueComments = [{ id: 999, body: client.publishedSummaries.at(-1)!, user: { login: 'github-actions[bot]' } }];
+  };
+  it('makes no AI request for unchanged successful patches, but manual commands force review', async () => {
+    const client = prepareIncremental();
+    const provider = new FakeProvider();
+    const review = vi.spyOn(provider, 'review');
+    expect((await runReview(client, provider)).status).toBe('completed');
+    saveSummary(client);
+    expect((await runReview(client, provider)).reasonCode).toBe('unchanged_since_review');
+    expect(review).toHaveBeenCalledTimes(1);
+    Object.assign(client.prDetails, { eventName: 'issue_comment', action: 'created', commentBody: '/review', mayTriggerReview: true });
+    expect((await runReview(client, provider)).status).toBe('completed');
+    expect(review).toHaveBeenCalledTimes(2);
+  });
+  it('reviews changed patches and invalidates when the base changes', async () => {
+    const client = prepareIncremental(); const provider = new FakeProvider();
+    await runReview(client, provider); saveSummary(client);
+    client.files[0].patch = BUGGY_PATCH.replace('toLowerCase()', 'toUpperCase()');
+    expect((await runReview(client, provider)).reviewedFiles).toBe(1);
+    saveSummary(client); client.prDetails.baseSha = 'new-base';
+    expect((await runReview(client, provider)).reviewedFiles).toBe(1);
+  });
+  it('never checkpoints failed model output or uncertain comment publication', async () => {
+    for (const failure of ['provider', 'publication']) {
+      const client = prepareIncremental();
+      if (failure === 'publication') vi.spyOn(client, 'publishReviewComments').mockResolvedValue({ publishedCount: 0, errors: ['unknown'] });
+      const provider = new FakeProvider({ shouldFail: failure === 'provider' });
+      expect((await runReview(client, provider)).status).toBe('partial');
+      expect(client.publishedSummaries.at(-1)).not.toContain('ai-review-state:');
+    }
+  });
+  it('counts context inside the actual provider request budget', async () => {
+    vi.stubEnv('INPUT_MAX-INPUT-TOKENS', '5000');
+    const client = prepareIncremental();
+    client.files[0].patch = "@@ -1 +1,2 @@\n-import x from './b.ts';\n+import x from './b.ts';\n+x();";
+    (client as any).fetchSourceFile = vi.fn().mockResolvedValue('x'.repeat(2048));
+    const provider = new HttpProvider('gemini', { apiKey: 'test', model: 'test', maxInputTokens: 5000 });
+    const review = vi.spyOn(provider, 'review').mockResolvedValue({ findings: [] });
+    const result = await runReview(client, provider);
+    if (review.mock.calls.length) {
+      const bytes = Buffer.byteLength(JSON.stringify(provider.requestBody(review.mock.calls[0][0])));
+      expect(bytes).toBeLessThanOrEqual(5000);
+    } else expect(result.reasonCode).toBe('all_files_exceeded_budgets');
   });
 });

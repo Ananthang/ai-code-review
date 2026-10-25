@@ -8,7 +8,8 @@ export const FindingSchema = z.object({
   severity: z.enum(['critical', 'high', 'medium', 'low']),
   message: z.string().min(1).max(2000),
   recommendation: z.string().min(1).max(2000),
-}).strict().refine((finding) => !isUnsafeReviewOutput(finding.message + '\n' + finding.recommendation), { message: 'AI guard rejected unsafe or off-task output' });
+  evidence: z.string().min(1).max(1000).optional(),
+}).strict().refine((finding) => !isUnsafeReviewOutput(finding.message + '\n' + finding.recommendation + '\n' + (finding.evidence ?? '')), { message: 'AI guard rejected unsafe or off-task output' });
 
 export const ProviderResponseSchema = z.object({
   summary: z.string().max(4000).optional(),
@@ -39,6 +40,8 @@ export function sanitizeFindingContent(text: string): string {
 
 export interface ValidationContext {
   filePatchMap: Map<string, ParsedPatchFile>;
+  minSeverity?: Severity;
+  requireEvidence?: boolean;
 }
 
 export interface ValidatedFindingsResult {
@@ -64,22 +67,7 @@ export function validateAndFilterFindings(
     }
 
     const finding = parseResult.data;
-    const cleanPath = finding.path.replace(/^\.?\/+/, '');
-    let filePatch = context.filePatchMap.get(cleanPath) ?? context.filePatchMap.get(finding.path);
-
-    if (!filePatch) {
-      for (const [p, patch] of context.filePatchMap.entries()) {
-        const cleanP = p.replace(/^\.?\/+/, '');
-        if (
-          cleanP.toLowerCase() === cleanPath.toLowerCase() ||
-          cleanP.endsWith('/' + cleanPath) ||
-          cleanPath.endsWith('/' + cleanP)
-        ) {
-          filePatch = patch;
-          break;
-        }
-      }
-    }
+    const filePatch = context.filePatchMap.get(finding.path);
 
     if (!filePatch) {
       droppedFindings.push({
@@ -89,28 +77,20 @@ export function validateAndFilterFindings(
       continue;
     }
 
-    let matchedLine = finding.line;
-    if (!filePatch.addedLines.has(matchedLine)) {
-      // Check if there is an added line nearby (within +/- 2 lines tolerance for model off-by-one)
-      let nearestDist = Infinity;
-      let nearestLine = -1;
-      for (const added of filePatch.addedLines) {
-        const dist = Math.abs(added - finding.line);
-        if (dist <= 2 && dist < nearestDist) {
-          nearestDist = dist;
-          nearestLine = added;
-        }
-      }
-      if (nearestLine !== -1) {
-        matchedLine = nearestLine;
-      }
-    }
-
+    const matchedLine = finding.line;
     if (!filePatch.addedLines.has(matchedLine)) {
       droppedFindings.push({
         finding,
         reason: `Line ${finding.line} in '${finding.path}' is not an eligible added line in this diff`,
       });
+      continue;
+    }
+
+    const ranks: Record<Severity, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+    if (ranks[finding.severity] < ranks[context.minSeverity ?? 'low']) continue;
+    if (context.requireEvidence && (!finding.evidence?.trim() ||
+        addedSourceLine(filePatch.patch, finding.line) !== finding.evidence)) {
+      droppedFindings.push({ finding, reason: 'Missing or unsupported added-line evidence' });
       continue;
     }
 
@@ -125,4 +105,17 @@ export function validateAndFilterFindings(
   }
 
   return { validFindings, droppedFindings };
+}
+
+function addedSourceLine(patch: string, target: number): string | undefined {
+  let right = 0;
+  for (const line of patch.split('\n')) {
+    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) { right = Number(hunk[1]); continue; }
+    if (line.startsWith('+')) {
+      if (right === target) return line.slice(1);
+      right++;
+    } else if (line.startsWith(' ')) right++;
+  }
+  return undefined;
 }

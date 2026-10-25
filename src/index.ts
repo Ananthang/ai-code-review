@@ -1,3 +1,5 @@
+import { collectContext } from './review/context.js';
+import { reviewPolicyKey, fileKey, readCheckpoint, checkpointMarker } from './review/incremental.js';
 import * as core from '@actions/core';
 import { reactToReviewStart } from './github/reactions.js';
 import { hasPromptInjection } from './security/ai-guard.js';
@@ -5,6 +7,7 @@ import { parseConfig } from './config.js';
 import { GitHubClient, OctokitGitHubClient } from './github/client.js';
 import { PathExclusionFilter } from './security/exclusions.js';
 import { parseUnifiedPatch } from './github/diff.js';
+import { buildReviewPrompt, SYSTEM_INSTRUCTION } from './review/prompt.js';
 import { budgetFiles } from './review/budget.js';
 import { AIProvider, Finding, ParsedPatchFile, ReviewInput, ReviewOutcome, ReviewStatus } from './types.js';
 import { createProvider } from './providers/factory.js';
@@ -194,16 +197,38 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
+    // Context is bounded, screened and fetched at an immutable PR SHA.
+    const availableContext = await collectContext(client, prDetails.headSha,
+      eligiblePatchFiles, exclusionFilter, config.maxContextBytes ?? 2048);
+    const policyKey = reviewPolicyKey(config, prDetails.baseSha, availableContext);
+    let relatedContext: Array<{ path: string; content: string }> = [];
+    let previousKeys = new Set<string>();
+    // Manual commands deliberately force a fresh review, including targeted requests.
+    if (config.incremental && prDetails.eventName === 'pull_request' && !config.staticReportPaths.length) {
+      try { previousKeys = readCheckpoint(await client.fetchIssueComments(prDetails.pullNumber), policyKey); }
+      catch { /* Missing state falls back to a full bounded review. */ }
+    }
+    const pendingFiles = eligiblePatchFiles.filter(file => !previousKeys.has(fileKey(file)));
+    const incrementalSkipped = eligiblePatchFiles.length - pendingFiles.length;
+    if (!pendingFiles.length) {
+      return finish({ status: status === 'partial' ? status : 'skipped', reasonCode: reasonCode ?? 'unchanged_since_review', reviewedFiles: 0, publishedFindings: 0 });
+    }
+
     // 5. Budget enforcement (FR-04)
     const provider = customProvider ?? createProvider(config);
-    const budget = budgetFiles(eligiblePatchFiles, {
+    const measureInput = (files: ReviewInput['files'], context = relatedContext) => {
+      const input = { files, maxFindings: config.maxFindings, language: config.reviewLanguage,
+        customInstructions: config.customInstructions, relatedContext: context,
+        minSeverity: config.minSeverity, requireEvidence: config.requireEvidence };
+      return Buffer.byteLength(provider instanceof HttpProvider
+        ? JSON.stringify(provider.requestBody(input)) : SYSTEM_INSTRUCTION + buildReviewPrompt(input), 'utf8');
+    };
+    const budget = budgetFiles(pendingFiles, {
       maxFiles: config.maxFiles,
       maxFileBytes: config.maxFileBytes,
       maxInputBytes: config.maxInputBytes,
       maxInputTokens: config.maxInputTokens,
-      measureInput: provider instanceof HttpProvider ? (files) => Buffer.byteLength(JSON.stringify(provider.requestBody({
-        files, maxFindings: config.maxFindings, language: config.reviewLanguage, customInstructions: config.customInstructions,
-      })), 'utf8') : undefined,
+      measureInput,
     });
 
     for (const skipped of budget.skippedFiles) {
@@ -249,6 +274,15 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
+    // Diff coverage takes priority; optional context uses only the remaining request budget.
+    const selectedFiles = budget.includedFiles.map(({ path, patch }) => ({ path, patch }));
+    for (const context of availableContext) {
+      const candidate = [...relatedContext, context];
+      const bytes = measureInput(selectedFiles, candidate);
+      if (bytes <= config.maxInputBytes && bytes <= config.maxInputTokens) relatedContext = candidate;
+    }
+    budget.estimatedTokens = measureInput(selectedFiles);
+
     reviewedFilesCount = budget.includedFiles.length;
     inputTokens = budget.estimatedTokens;
     SafeLogger.info(`Reviewing ${reviewedFilesCount} files (~${inputTokens} estimated input tokens)`);
@@ -283,6 +317,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         maxFindings: config.maxFindings,
         language: config.reviewLanguage,
         customInstructions: config.customInstructions,
+        relatedContext, minSeverity: config.minSeverity, requireEvidence: config.requireEvidence,
       };
 
       const result = await provider.review(reviewInput, abortController.signal);
@@ -337,6 +372,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
             maxFindings: config.maxFindings,
             language: config.reviewLanguage,
             customInstructions: config.customInstructions,
+            relatedContext, minSeverity: config.minSeverity, requireEvidence: config.requireEvidence,
           };
           const fbResult = await fallbackProvider.review(reviewInput, fallbackAbortController.signal);
           clearTimeout(fallbackTimeout);
@@ -408,6 +444,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       clearTimeout(timeout);
     }
 
+    let staticFindings: Finding[] = [];
     // 7. Optional static analysis report ingestion (FR-09)
     if (config.staticReportPaths.length > 0) {
       SafeLogger.info(`Ingesting ${config.staticReportPaths.length} static report path(s)...`);
@@ -418,11 +455,14 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       });
       SafeLogger.info(`Ingested ${staticResult.findings.length} findings from ${staticResult.processedReports} report(s)`);
       if (staticResult.skippedReports.length) { status = 'partial'; reasonCode = 'static_reports_skipped'; }
-      rawFindings.push(...staticResult.findings);
+      staticFindings = staticResult.findings;
     }
 
     // 8. Runtime schema & added-line validation (FR-06, FR-07)
-    const { validFindings, droppedFindings } = validateAndFilterFindings(rawFindings, { filePatchMap });
+    const { validFindings, droppedFindings } = validateAndFilterFindings(rawFindings, { filePatchMap, minSeverity: config.minSeverity, requireEvidence: config.requireEvidence });
+    const staticValidation = validateAndFilterFindings(staticFindings, { filePatchMap, minSeverity: config.minSeverity });
+    validFindings.push(...staticValidation.validFindings);
+    droppedFindings.push(...staticValidation.droppedFindings);
     if (droppedFindings.length > 0) {
       status = 'partial';
       reasonCode = 'invalid_findings_dropped';
@@ -454,6 +494,10 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         overview: aiSummary,
         fallbackFromModel,
         fallbackReason,
+        incrementalSkipped,
+        contextFiles: relatedContext.length,
+        checkpoint: status === 'completed' && !config.staticReportPaths.length
+          ? checkpointMarker(policyKey, [...previousKeys, ...budget.includedFiles.map(fileKey)]) : undefined,
       },
       config.maxFindings
     );

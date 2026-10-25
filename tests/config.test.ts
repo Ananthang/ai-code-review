@@ -16,10 +16,10 @@ describe('Configuration parsing & limit ceilings', () => {
     expect(config.provider).toBe('fake');
     expect(config.model).toBe('fake-model-v1');
     expect(config.maxFiles).toBe(20);
-    expect(config.maxFindings).toBe(10);
+    expect(config.maxFindings).toBe(5);
     expect(config.allowExternalProvider).toBe(false);
     expect(config.mode).toBe('comment');
-    expect(config.thinkingLevel).toBe('medium');
+    expect(config.thinkingLevel).toBe('low');
     expect(config.fallbackModel).toBe('');
   });
 
@@ -31,7 +31,7 @@ describe('Configuration parsing & limit ceilings', () => {
       fallbackModel: 'gemini-2.5-flash-lite',
     });
     expect(config.fallbackModel).toBe('gemini-2.5-flash-lite');
-    expect(config.maxRequests).toBe(2);
+    expect(config.maxRequests).toBe(1);
   });
 
   it('throws when model is missing from all inputs and env vars', () => {

@@ -27,7 +27,7 @@ inputs:
     required: false
     default: 'http://127.0.0.1:11434'
   allow-external-provider:
-    description: 'Explicit opt-in to send selected diff content to the external provider'
+    description: 'Explicit opt-in to send selected diff, instructions and bounded related source to the external provider'
     required: false
     default: 'false'
   max-files:
@@ -45,19 +45,19 @@ inputs:
   max-input-tokens:
     description: 'Estimated input tokens ceiling guard'
     required: false
-    default: '24000'
+    default: '12000'
   max-output-tokens:
     description: 'Provider output token cap'
     required: false
-    default: '4000'
+    default: '2000'
   max-requests:
-    description: 'Maximum provider requests per run (default 2 to permit one configured fallback)'
+    description: 'Maximum provider requests per run (default 1; explicitly set 2 for one configured fallback)'
     required: false
-    default: '2'
+    default: '1'
   max-findings:
     description: 'Maximum inline findings to publish per run'
     required: false
-    default: '10'
+    default: '5'
   review-language:
     description: 'Natural language for review feedback'
     required: false
@@ -79,17 +79,30 @@ inputs:
     required: false
     default: 'false'
   thinking-level:
-    description: 'Thinking / reasoning effort level for supported models: minimal, low, medium, high (default: medium)'
+    description: 'Thinking / reasoning effort level for supported models: minimal, low, medium, high (default: low)'
     required: false
-    default: 'medium'
+    default: 'low'
   custom-instructions:
     description: 'Custom review guidelines, rules, or instructions. Can be inline text, or one or multiple file paths in the project (newline or comma-separated, e.g. docs/rules.md, standards/security.md). Defaults to .github/ai-review.md if that file exists in the repository.'
     required: false
     default: ''
   fallback-model:
-    description: 'Optional fallback model on HTTP 429; requires max-requests: 2'
+    description: 'Optional fallback model on HTTP 429/503; requires max-requests: 2'
     required: false
     default: ''
+
+  incremental:
+    description: 'Skip unchanged file patches from successful reviews; manual commands force review'
+    default: 'true'
+  max-context-bytes:
+    description: 'Total optional relative-import source bytes (0 disables; maximum 8192)'
+    default: '2048'
+  min-severity:
+    description: 'Minimum published severity: critical, high, medium, low'
+    default: 'medium'
+  require-evidence:
+    description: 'Require an exact added-source-line quote supporting every finding'
+    default: 'true'
 
 outputs:
   status:

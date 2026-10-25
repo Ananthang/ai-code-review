@@ -60,15 +60,15 @@ For local Ollama, use the separate instructions in [PROVIDERS.md](docs/PROVIDERS
 | `max-files` | 20, ceiling 100 |
 | `max-file-bytes` | 20,480, ceiling 102,400 |
 | `max-input-bytes` | 81,920, ceiling 512,000; includes serialized instructions and envelope |
-| `max-input-tokens` | 24,000, ceiling 100,000; conservative byte-based guard, not actual billing |
-| `max-output-tokens` | 4,000, ceiling 8,192; selected model must support this value |
+| `max-input-tokens` | 12,000, ceiling 100,000; conservative byte-based guard, not actual billing |
+| `max-output-tokens` | 2,000, ceiling 8,192; selected model must support this value |
 | `max-requests` | Default 1; maximum 2 for an explicitly configured fallback; no HTTP retries |
-| `max-findings` | 10, ceiling 50 |
+| `max-findings` | 5, ceiling 50 |
 | `review-language` | English |
 | `exclude-patterns` | Additional newline/comma-separated globs; secret exclusions remain mandatory |
 | `mode` | `comment` only |
 | `static-report-paths` | Explicit paths, no glob expansion; SHA-wrapped JSON reports |
-| `thinking-level` | `medium`; reasoning depth: `minimal`, `low`, `medium`, `high` (for Gemini 3 & 2.5) |
+| `thinking-level` | `low`; reasoning depth: `minimal`, `low`, `medium`, `high` (for Gemini 3 & 2.5) |
 | `fail-on-error` | `false`; set to `true` to fail the GitHub Actions step if the AI review fails |
 | `custom-instructions` | Optional; inline rules, or path to a file in the project (defaults to auto-detecting `.github/ai-review.md`) |
 
@@ -174,7 +174,7 @@ If you are using Google AI Studio free tier and frequently hit `429 Too Many Req
     max-requests: 2
 ```
 
-- If the primary model returns HTTP 429, the action attempts `fallback-model` only when `max-requests: 2` explicitly permits a second call. With the default of 1, no fallback call is made. HTTP 503 is not automatically retried.
+- If the primary model returns HTTP 429, the action attempts `fallback-model` only when `max-requests: 2` explicitly permits a second call. With the default of 1, no fallback call is made. HTTP 503 also permits the explicitly budgeted fallback; there are no transport retries.
 - When fallback succeeds, the PR summary comment clearly indicates: `gemini / gemini-2.5-flash-lite (fallback on 429)`.
 - If no `fallback-model` is specified, no fallback request is attempted.
 
@@ -204,3 +204,25 @@ Build runs TypeScript checking and regenerates `dist/index.js`. Commit the regen
 [MIT](LICENSE).
 
 Custom instruction files must resolve inside the workspace; escaping symlinks and sibling-directory paths are not read. Recognized credential markers in custom instructions stop review before provider access. Instruction text is included in the selection budget. A missing `/review <file>` target reports `target_file_not_found` without reviewing other files. `fail-on-error: true` fails every partial/failed outcome; intentional skips remain non-failing.
+
+
+## Low-cost, guarded review
+
+The default review now uses at most **one AI request**, **12,000 estimated input tokens**,
+**2,000 output tokens**, and **five findings**, with low reasoning effort where supported.
+A configured fallback requires explicitly setting `max-requests: 2`.
+
+Automatic reviews skip unchanged file patches from successful reviews. Manual `/review`
+commands force a fresh bounded review. Up to two small relative JS/TS imports can provide
+supporting context, fetched at the exact PR commit, using only budget left after the diff.
+Medium-or-higher findings must quote their exact added source line by default.
+
+| Input | Default | Purpose |
+| --- | --- | --- |
+| `incremental` | `true` | Reuse successful file-patch review checkpoints |
+| `max-context-bytes` | `2048` | Total optional source context bytes; `0` disables; ceiling `8192` |
+| `min-severity` | `medium` | Publish only this severity or higher |
+| `require-evidence` | `true` | Require an exact quote of the finding's changed source line |
+
+See [Low-cost review and security design](docs/LOW_COST_REVIEW.md) for configuration,
+trust boundaries, coverage limitations, and checkpoint behavior.

@@ -27,7 +27,7 @@ describe('Provider HTTP contracts (mocked; no live billing)', () => {
     expect(init.headers[authHeader]).toContain('sentinel-key');
     expect(init.body).not.toContain('sentinel-key');
     const body = JSON.parse(init.body);
-    expect(body.generationConfig?.maxOutputTokens ?? body.max_output_tokens ?? body.max_tokens ?? body.options?.num_predict).toBe(4000);
+    expect(body.generationConfig?.maxOutputTokens ?? body.max_output_tokens ?? body.max_tokens ?? body.options?.num_predict).toBe(2000);
     if (name === 'openai') expect(body.store).toBe(false);
     if (name === 'ollama') expect(body.stream).toBe(false);
   });

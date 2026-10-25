@@ -6,6 +6,7 @@ export interface Finding {
   severity: Severity;
   message: string;
   recommendation: string;
+  evidence?: string;
 }
 
 export interface ReviewInput {
@@ -13,6 +14,9 @@ export interface ReviewInput {
   maxFindings: number;
   language: string;
   customInstructions?: string;
+  relatedContext?: ReadonlyArray<{ path: string; content: string }>;
+  minSeverity?: Severity;
+  requireEvidence?: boolean;
 }
 
 export interface ProviderResult {
@@ -83,4 +87,8 @@ export interface Config {
   thinkingLevel: ThinkingLevel;
   customInstructions?: string;
   fallbackModel?: string;
+  incremental?: boolean;
+  maxContextBytes?: number;
+  minSeverity?: Severity;
+  requireEvidence?: boolean;
 }
