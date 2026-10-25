@@ -73,7 +73,7 @@ export interface GitHubClient {
     commentId: number,
     reaction: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes'
   ): Promise<void>;
-  fetchReviewComment?(commentId: number): Promise<{ id: number; body: string; user?: { login: string } } | undefined>;
+  fetchReviewComment?(commentId: number): Promise<{ id: number; body: string; user?: { login: string }; in_reply_to_id?: number } | undefined>;
   replyToReviewComment?(pullNumber: number, commentId: number, body: string): Promise<{ id: number }>;
   addReviewCommentReaction?(commentId: number, reaction: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes'): Promise<void>;
 }
@@ -432,7 +432,7 @@ export class OctokitGitHubClient implements GitHubClient {
     }
   }
 
-  public async fetchReviewComment(commentId: number): Promise<{ id: number; body: string; user?: { login: string } } | undefined> {
+  public async fetchReviewComment(commentId: number): Promise<{ id: number; body: string; user?: { login: string }; in_reply_to_id?: number } | undefined> {
     try {
       const res = await this.octokit.rest.pulls.getReviewComment({
         owner: this.owner,
@@ -443,6 +443,7 @@ export class OctokitGitHubClient implements GitHubClient {
         id: res.data.id,
         body: res.data.body,
         user: res.data.user ? { login: res.data.user.login } : undefined,
+        in_reply_to_id: res.data.in_reply_to_id,
       };
     } catch {
       return undefined;

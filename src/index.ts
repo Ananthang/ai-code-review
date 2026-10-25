@@ -79,6 +79,21 @@ export function getOutcomeDetails(status: ReviewStatus, reasonCode?: string): { 
         explanation: 'AI reviewer successfully answered the discussion thread on the pull request review comment.',
         nextStep: 'Check the review thread reply on GitHub.',
       };
+    case 'thread_target_file_excluded':
+      return {
+        explanation: 'The file discussed in this review comment is excluded by repository security policy.',
+        nextStep: 'Exclude rules prevent AI analysis on sensitive, binary, or configured paths.',
+      };
+    case 'thread_diff_hunk_too_large':
+      return {
+        explanation: 'The code snippet for this review thread exceeds the configured max-file-bytes limit.',
+        nextStep: 'Increase max-file-bytes in workflow configuration if this file should be reviewed.',
+      };
+    case 'provider_thread_reply_empty':
+      return {
+        explanation: 'The AI provider returned an empty response for this thread discussion.',
+        nextStep: 'Retry the question by replying again in the thread.',
+      };
     case 'provider_thread_reply_failed':
       return {
         explanation: 'Failed to generate thread explanation from the AI provider.',
@@ -289,18 +304,59 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     if (prDetails.eventName === 'pull_request_review_comment') {
       SafeLogger.startGroup('Thread Discussion & Reply');
       const commentText = (prDetails.commentBody || '').trim();
-      SafeLogger.info(`Processing inline review comment #${prDetails.reviewCommentId} on ${prDetails.threadPath || 'code'}:${prDetails.threadLine || 0}`);
+      const threadPath = (prDetails.threadPath || 'code').replace(/[\r\n]+/g, ' ').trim();
+      SafeLogger.info(`Processing inline review comment #${prDetails.reviewCommentId} on ${threadPath}:${prDetails.threadLine || 0}`);
+
+      // F01: Enforce mandatory file exclusions and file size limits
+      const exclusionFilter = new PathExclusionFilter(config.excludePatterns);
+      if (exclusionFilter.testPath(threadPath).excluded) {
+        SafeLogger.warning(`Skipping review thread on '${threadPath}': file is excluded by security/path policy`);
+        return finish({ status: 'skipped', reasonCode: 'thread_target_file_excluded', reviewedFiles: 0, publishedFindings: 0 });
+      }
+
+      if (Buffer.byteLength(prDetails.diffHunk || '', 'utf-8') > config.maxFileBytes) {
+        SafeLogger.warning(`Skipping review thread on '${threadPath}': diff hunk exceeds max-file-bytes limit (${config.maxFileBytes} bytes)`);
+        return finish({ status: 'skipped', reasonCode: 'thread_diff_hunk_too_large', reviewedFiles: 0, publishedFindings: 0 });
+      }
 
       if (prDetails.reviewCommentId && client.addReviewCommentReaction) {
         await client.addReviewCommentReaction(prDetails.reviewCommentId, 'eyes');
       }
 
+      // F02: Resolve the root discussion comment ID (replies cannot be replied to in GitHub API)
+      let rootCommentId = prDetails.inReplyToId || prDetails.reviewCommentId;
       let parentFindingText: string | undefined;
       if (prDetails.inReplyToId && client.fetchReviewComment) {
-        const parentComment = await client.fetchReviewComment(prDetails.inReplyToId);
-        if (parentComment?.body) {
-          parentFindingText = parentComment.body;
-          SafeLogger.info(`Loaded parent review comment finding (${parentComment.body.length} chars).`);
+        let currentId: number | undefined = prDetails.inReplyToId;
+        while (currentId) {
+          const comment = await client.fetchReviewComment(currentId);
+          if (!parentFindingText && comment?.body) {
+            parentFindingText = comment.body;
+          }
+          if (comment?.in_reply_to_id) {
+            currentId = comment.in_reply_to_id;
+            rootCommentId = currentId;
+          } else {
+            rootCommentId = currentId;
+            break;
+          }
+        }
+        if (parentFindingText) {
+          SafeLogger.info(`Loaded parent review comment finding (${parentFindingText.length} chars). Root discussion ID: #${rootCommentId}`);
+        }
+      }
+
+      // F04: Stale PR head check
+      let isStaleHead = false;
+      if (client.getHeadSha) {
+        try {
+          const currentHead = await client.getHeadSha(prDetails.pullNumber);
+          if (currentHead && currentHead !== prDetails.headSha) {
+            isStaleHead = true;
+            SafeLogger.info(`Thread question is based on revision ${prDetails.headSha.slice(0, 7)}, while current PR head is ${currentHead.slice(0, 7)}.`);
+          }
+        } catch {
+          // Best effort check
         }
       }
 
@@ -310,7 +366,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       const provider = customProvider ?? createProvider(config);
       const threadInput: ReviewInput = {
         files: [{
-          path: prDetails.threadPath || 'code',
+          path: threadPath,
           patch: prDetails.diffHunk || '',
         }],
         maxFindings: 0,
@@ -339,19 +395,29 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         clearTimeout(timeout);
       }
 
+      // F05: Reject empty answers rather than fabricating generic advice
       if (!replyExplanation || !replyExplanation.trim()) {
-        replyExplanation = 'The recommended change is advised to adhere to production hygiene, security, and reliability standards. If this pattern is intentional in this context, feel free to keep it.';
+        SafeLogger.warning('Provider returned an empty explanation for the review comment thread.');
+        return finish({ status: 'partial', reasonCode: 'provider_thread_reply_empty', reviewedFiles: 1, publishedFindings: 0 });
       }
+
+      const replyNote = isStaleHead
+        ? `\n\n> [!NOTE]\n> This explanation is based on commit \`${prDetails.headSha.slice(0, 7)}\`. The pull request has newer commits.`
+        : '';
 
       const formattedReply = [
         '> [!NOTE]',
         `> ${sanitizeFindingContent(replyExplanation.trim())}`,
-      ].join('\n');
+        replyNote,
+      ].filter(Boolean).join('\n');
 
-      if (client.replyToReviewComment && prDetails.reviewCommentId) {
-        await client.replyToReviewComment(prDetails.pullNumber, prDetails.reviewCommentId, formattedReply);
-        SafeLogger.info('Successfully published reply to review comment thread.');
+      if (!client.replyToReviewComment || !rootCommentId) {
+        SafeLogger.warning('Client does not support replying to review comments or root comment ID could not be determined.');
+        return finish({ status: 'partial', reasonCode: 'publication_incomplete', reviewedFiles: 1, publishedFindings: 0 });
       }
+
+      await client.replyToReviewComment(prDetails.pullNumber, rootCommentId, formattedReply);
+      SafeLogger.info(`Successfully published reply to review comment thread (root comment #${rootCommentId}).`);
 
       if (prDetails.reviewCommentId && client.addReviewCommentReaction) {
         await client.addReviewCommentReaction(prDetails.reviewCommentId, 'rocket');
@@ -633,7 +699,8 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
           `Primary model "${config.model}" encountered ${errorLabel}. Attempting fallback model: "${fallbackTargetModel}" [attempt 2 of ${config.maxRequests}]...`
         );
         const fallbackAbortController = new AbortController();
-        const fallbackTimeout = setTimeout(() => fallbackAbortController.abort(), 120000);
+        const remainingBudgetMs = Math.max(5000, 120000 - (Date.now() - startTime));
+        const fallbackTimeout = setTimeout(() => fallbackAbortController.abort(), Math.min(120000, remainingBudgetMs));
         try {
           const fallbackProvider = createProvider({
             ...config,

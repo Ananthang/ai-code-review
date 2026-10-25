@@ -85,12 +85,15 @@ export function validateAndFilterFindings(
     }
 
     const finding = parseResult.data;
+    const safePath = typeof finding.path === 'string' && /^[a-zA-Z0-9_./\-]{1,250}$/.test(finding.path)
+      ? `'${finding.path}'`
+      : '<invalid-path>';
     const filePatch = context.filePatchMap.get(finding.path);
 
     if (!filePatch) {
       droppedFindings.push({
         finding,
-        reason: `File '${finding.path}' was not in the reviewed file set`,
+        reason: `File ${safePath} was not in the reviewed file set`,
       });
       continue;
     }
@@ -99,7 +102,7 @@ export function validateAndFilterFindings(
     if (!filePatch.addedLines.has(matchedLine)) {
       droppedFindings.push({
         finding,
-        reason: `Line ${finding.line} in '${finding.path}' is not an eligible added line in this diff`,
+        reason: `Line ${finding.line} in ${safePath} is not an eligible added line in this diff`,
       });
       continue;
     }

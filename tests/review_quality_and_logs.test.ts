@@ -18,13 +18,16 @@ describe('Log Masking and Workflow-Command Injection Resistance', () => {
     expect(sanitized).toContain('[REDACTED_TOKEN]');
   });
 
-  it('neutralizes GitHub workflow command injection attempts', () => {
-    const maliciousLog = '::set-output name=admin::true\nNormal log message\n::add-path::/tmp/evil';
+  it('neutralizes GitHub workflow command injection attempts including indented and legacy forms', () => {
+    const maliciousLog = '::set-output name=admin::true\nNormal log message\n  ::add-path::/tmp/evil\n##[error]legacy command\n  ##[warning]indented legacy';
     const sanitized = SafeLogger.sanitize(maliciousLog);
 
-    expect(sanitized).not.toMatch(/^::/m);
+    expect(sanitized).not.toMatch(/^\s*::/m);
+    expect(sanitized).not.toMatch(/^\s*##\[/m);
     expect(sanitized).toContain(': :set-output name=admin::true');
-    expect(sanitized).toContain(': :add-path::/tmp/evil');
+    expect(sanitized).toContain('  : :add-path::/tmp/evil');
+    expect(sanitized).toContain('# #[error]legacy command');
+    expect(sanitized).toContain('  # #[warning]indented legacy');
   });
 
   it('safely handles group nesting and closeAllGroups', () => {
@@ -48,6 +51,10 @@ describe('Log Masking and Workflow-Command Injection Resistance', () => {
       'invalid_findings_dropped',
       'stale_head_discarded',
       'publication_incomplete',
+      'thread_reply_published',
+      'thread_target_file_excluded',
+      'thread_diff_hunk_too_large',
+      'provider_thread_reply_empty',
     ];
 
     for (const reason of reasons) {
@@ -405,11 +412,163 @@ describe('Interactive Inline Review Thread Replies', () => {
     expect(outcome.status).toBe('completed');
     expect(outcome.reasonCode).toBe('thread_reply_published');
     expect(threadReplies).toHaveLength(1);
-    expect(threadReplies[0].commentId).toBe(101);
+    expect(threadReplies[0].commentId).toBe(99); // Published against root discussion ID
     expect(threadReplies[0].body).toContain('Leaving console.log in backend API routes');
     expect(reactions).toEqual([
       { commentId: 101, reaction: 'eyes' },
       { commentId: 101, reaction: 'rocket' },
     ]);
+  });
+
+  it('skips thread reply when target file is matched by path exclusions (F01)', async () => {
+    const mockClient: any = {
+      getPullRequestDetails: async () => ({
+        owner: 'testowner',
+        repo: 'testrepo',
+        pullNumber: 6,
+        baseSha: 'base123',
+        headSha: 'head123',
+        isDraft: false,
+        isFork: false,
+        action: 'created',
+        eventName: 'pull_request_review_comment',
+        commentBody: '/ask is this secret safe?',
+        reviewCommentId: 105,
+        threadPath: '.env.production',
+        threadLine: 5,
+        diffHunk: '@@ -1,2 +1,2 @@\n+ SECRET_KEY=foo',
+        mayTriggerReview: true,
+      }),
+    };
+
+    const fakeProvider: any = {
+      name: 'fake',
+      review: async () => ({ summary: 'ok', findings: [] }),
+    };
+
+    const outcome = await runReview(mockClient, fakeProvider);
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('thread_target_file_excluded');
+  });
+
+  it('skips thread reply when diff hunk exceeds max-file-bytes limit', async () => {
+    const oversizedHunk = '+ line\n'.repeat(4000); // Exceeds default max-file-bytes (20KB)
+    const mockClient: any = {
+      getPullRequestDetails: async () => ({
+        owner: 'testowner',
+        repo: 'testrepo',
+        pullNumber: 6,
+        baseSha: 'base123',
+        headSha: 'head123',
+        isDraft: false,
+        isFork: false,
+        action: 'created',
+        eventName: 'pull_request_review_comment',
+        commentBody: '/explain this diff',
+        reviewCommentId: 106,
+        threadPath: 'src/huge.ts',
+        threadLine: 10,
+        diffHunk: oversizedHunk,
+        mayTriggerReview: true,
+      }),
+    };
+
+    const fakeProvider: any = {
+      name: 'fake',
+      review: async () => ({ summary: 'ok', findings: [] }),
+    };
+
+    const outcome = await runReview(mockClient, fakeProvider);
+    expect(outcome.status).toBe('skipped');
+    expect(outcome.reasonCode).toBe('thread_diff_hunk_too_large');
+  });
+
+  it('returns partial outcome when AI provider returns empty thread explanation (F05)', async () => {
+    const mockClient: any = {
+      getPullRequestDetails: async () => ({
+        owner: 'testowner',
+        repo: 'testrepo',
+        pullNumber: 6,
+        baseSha: 'base123',
+        headSha: 'head123',
+        isDraft: false,
+        isFork: false,
+        action: 'created',
+        eventName: 'pull_request_review_comment',
+        commentBody: '/review why?',
+        reviewCommentId: 107,
+        threadPath: 'src/app.ts',
+        threadLine: 10,
+        diffHunk: '@@ -1,2 +1,2 @@\n+ const x = 1;',
+        mayTriggerReview: true,
+      }),
+      fetchReviewComment: async () => undefined,
+      replyToReviewComment: async () => ({ id: 1 }),
+      addReviewCommentReaction: async () => {},
+    };
+
+    const emptyProvider: any = {
+      name: 'fake',
+      review: async () => ({
+        summary: '   ',
+        findings: [],
+      }),
+    };
+
+    const outcome = await runReview(mockClient, emptyProvider);
+    expect(outcome.status).toBe('partial');
+    expect(outcome.reasonCode).toBe('provider_thread_reply_empty');
+  });
+
+  it('correctly resolves root comment ID in nested reply chains (F02)', async () => {
+    const replies: Array<{ commentId: number; body: string }> = [];
+    const mockClient: any = {
+      getPullRequestDetails: async () => ({
+        owner: 'testowner',
+        repo: 'testrepo',
+        pullNumber: 6,
+        baseSha: 'base123',
+        headSha: 'head123',
+        isDraft: false,
+        isFork: false,
+        action: 'created',
+        eventName: 'pull_request_review_comment',
+        commentBody: '/ask why did you flag this?',
+        reviewCommentId: 303,
+        inReplyToId: 202,
+        threadPath: 'src/api.ts',
+        threadLine: 15,
+        diffHunk: '@@ -10,3 +10,3 @@\n+ foo()',
+        mayTriggerReview: true,
+      }),
+      fetchReviewComment: async (id: number) => {
+        if (id === 202) {
+          return { id: 202, body: 'User reply asking question', in_reply_to_id: 101 };
+        }
+        if (id === 101) {
+          return { id: 101, body: 'Root bot finding comment' };
+        }
+        return undefined;
+      },
+      replyToReviewComment: async (_pr: number, commentId: number, body: string) => {
+        replies.push({ commentId, body });
+        return { id: 404 };
+      },
+      addReviewCommentReaction: async () => {},
+    };
+
+    const fakeProvider: any = {
+      name: 'fake',
+      review: async () => ({
+        summary: 'The function foo() should handle rejection.',
+        findings: [],
+      }),
+    };
+
+    const outcome = await runReview(mockClient, fakeProvider);
+    expect(outcome.status).toBe('completed');
+    expect(outcome.reasonCode).toBe('thread_reply_published');
+    expect(replies).toHaveLength(1);
+    expect(replies[0].commentId).toBe(101); // Traversed 202 -> 101 to find root
   });
 });
