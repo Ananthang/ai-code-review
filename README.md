@@ -28,6 +28,8 @@ on:
     types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -43,7 +45,9 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository &&
        !github.event.pull_request.draft) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
-       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review ')))
+       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review '))) ||
+      (github.event_name == 'pull_request_review_comment' &&
+       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review ') || startsWith(github.event.comment.body, '/ask ') || startsWith(github.event.comment.body, '/explain ')))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
@@ -99,7 +103,7 @@ For local Ollama, use the separate instructions in [PROVIDERS.md](docs/PROVIDERS
 
 Only included added lines can receive findings. Fork/draft PRs are skipped. Prompt framing and exclusions reduce risk but cannot eliminate injection, secret exposure, or false positives. No reviewed code is executed by the action itself. No approvals or change requests are submitted.
 
-The included workflow also handles `/review` and `/review exact/path.ts` comments. The actor must have repository write/maintain/admin permission; denied or unverifiable permission skips review. This feature requires the `issue_comment` workflow trigger. Dedupe recognizes standard `github-actions[bot]` comments; custom PAT/app identities are not supported for maintained-comment ownership.
+The included workflow also handles `/review` and `/review exact/path.ts` comments, as well as conversational inline review thread replies (e.g., `/review why is this needed?`, `/ask ...`, or `/explain ...`). The actor must have repository write/maintain/admin permission; denied or unverifiable permission skips review. This feature requires the `issue_comment` and `pull_request_review_comment` workflow triggers. Dedupe recognizes standard `github-actions[bot]` comments; custom PAT/app identities are not supported for maintained-comment ownership.
 
 When an eligible review starts, the action adds 👀 to the triggering `/review` comment. On the first automatic review (no existing bot-owned review summary), it adds 👀 to the PR description instead. Skipped reviews do not receive a start reaction, and reaction permission failures do not stop the review. The reaction records that review started; it remains if the provider later fails. The existing 🚀 comment reaction is retained after the publication flow completes.
 

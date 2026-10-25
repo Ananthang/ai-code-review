@@ -14,6 +14,11 @@ export interface PullRequestDetails {
   commentId?: number;
   targetFile?: string;
   mayTriggerReview?: boolean;
+  reviewCommentId?: number;
+  inReplyToId?: number;
+  threadPath?: string;
+  threadLine?: number;
+  diffHunk?: string;
 }
 
 export interface GitHubFile {
@@ -68,6 +73,9 @@ export interface GitHubClient {
     commentId: number,
     reaction: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes'
   ): Promise<void>;
+  fetchReviewComment?(commentId: number): Promise<{ id: number; body: string; user?: { login: string } } | undefined>;
+  replyToReviewComment?(pullNumber: number, commentId: number, body: string): Promise<{ id: number }>;
+  addReviewCommentReaction?(commentId: number, reaction: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes'): Promise<void>;
 }
 
 export class OctokitGitHubClient implements GitHubClient {
@@ -141,10 +149,10 @@ export class OctokitGitHubClient implements GitHubClient {
       const isDraft = Boolean(pr.draft);
       const commentBody = payload.comment?.body || '';
 
-      // Parse optional target file filter, e.g. "/review src/user.ts"
+      // Parse optional target file filter, e.g. "/review src/user.ts" (single file argument)
       let targetFile: string | undefined;
       const parts = commentBody.trim().split(/\s+/);
-      if (parts.length > 1 && !parts[1].startsWith('-')) {
+      if (parts.length === 2 && !parts[1].startsWith('-')) {
         targetFile = parts[1];
       }
 
@@ -161,6 +169,51 @@ export class OctokitGitHubClient implements GitHubClient {
         commentBody,
         commentId: payload.comment?.id,
         targetFile,
+        mayTriggerReview,
+      };
+    }
+
+    // Support pull_request_review_comment event (e.g. replies on inline diff review threads)
+    if (eventName === 'pull_request_review_comment') {
+      const pr = payload.pull_request;
+      if (!pr) {
+        throw new Error("Event 'pull_request_review_comment' does not contain a pull_request payload");
+      }
+      const pullNumber = pr.number;
+      let mayTriggerReview = false;
+      if (payload.action === 'created' && payload.sender?.login) {
+        try {
+          const permission = await this.octokit.rest.repos.getCollaboratorPermissionLevel({
+            owner: this.owner, repo: this.repo, username: payload.sender.login,
+          });
+          mayTriggerReview = ['admin', 'maintain', 'write'].includes(permission.data.permission);
+        } catch { /* Fail closed when authorization cannot be established. */ }
+      }
+
+      const comment = payload.comment;
+      const commentBody = comment?.body || '';
+      const headRepoFullName = pr.head?.repo?.full_name;
+      const baseRepoFullName = pr.base?.repo?.full_name;
+      const isFork = !headRepoFullName || !baseRepoFullName || headRepoFullName !== baseRepoFullName;
+      const isDraft = Boolean(pr.draft);
+
+      return {
+        owner: this.owner,
+        repo: this.repo,
+        pullNumber,
+        baseSha: pr.base.sha,
+        headSha: pr.head.sha,
+        isDraft,
+        isFork,
+        action,
+        eventName,
+        commentBody,
+        commentId: comment?.id,
+        reviewCommentId: comment?.id,
+        inReplyToId: comment?.in_reply_to_id,
+        threadPath: comment?.path,
+        threadLine: comment?.line ?? comment?.original_line,
+        diffHunk: comment?.diff_hunk,
         mayTriggerReview,
       };
     }
@@ -376,6 +429,47 @@ export class OctokitGitHubClient implements GitHubClient {
       }
     } catch (err: unknown) {
       throw this.sanitizeError(err, 'Failed to create or update summary comment');
+    }
+  }
+
+  public async fetchReviewComment(commentId: number): Promise<{ id: number; body: string; user?: { login: string } } | undefined> {
+    try {
+      const res = await this.octokit.rest.pulls.getReviewComment({
+        owner: this.owner,
+        repo: this.repo,
+        comment_id: commentId,
+      });
+      return {
+        id: res.data.id,
+        body: res.data.body,
+        user: res.data.user ? { login: res.data.user.login } : undefined,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  public async replyToReviewComment(pullNumber: number, commentId: number, body: string): Promise<{ id: number }> {
+    const res = await this.octokit.rest.pulls.createReplyForReviewComment({
+      owner: this.owner,
+      repo: this.repo,
+      pull_number: pullNumber,
+      comment_id: commentId,
+      body,
+    });
+    return { id: res.data.id };
+  }
+
+  public async addReviewCommentReaction(commentId: number, reaction: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes'): Promise<void> {
+    try {
+      await this.octokit.rest.reactions.createForPullRequestReviewComment({
+        owner: this.owner,
+        repo: this.repo,
+        comment_id: commentId,
+        content: reaction,
+      });
+    } catch {
+      // Non-fatal if reaction permissions are unavailable
     }
   }
 

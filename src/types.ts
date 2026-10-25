@@ -18,6 +18,11 @@ export interface ReviewInput {
   relatedContext?: ReadonlyArray<{ path: string; content: string }>;
   minSeverity?: Severity;
   requireEvidence?: boolean;
+  threadContext?: {
+    comment: string;
+    originalFinding?: string;
+    diffHunk?: string;
+  };
 }
 
 export interface ProviderResult {

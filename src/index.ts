@@ -12,7 +12,7 @@ import { budgetFiles } from './review/budget.js';
 import { AIProvider, Finding, ParsedPatchFile, ReviewInput, ReviewOutcome, ReviewStatus } from './types.js';
 import { createProvider } from './providers/factory.js';
 import { HttpProvider } from './providers/http.js';
-import { validateAndFilterFindings } from './review/validate.js';
+import { sanitizeFindingContent, validateAndFilterFindings } from './review/validate.js';
 import { publishFindingsAndSummary } from './github/comments.js';
 import { ingestStaticReports } from './analyzers/static.js';
 import { SafeLogger } from './telemetry.js';
@@ -73,6 +73,16 @@ export function getOutcomeDetails(status: ReviewStatus, reasonCode?: string): { 
       return {
         explanation: 'The file specified in /review <file> was not modified in this pull request.',
         nextStep: 'Verify the file path against the PR diff and try again.',
+      };
+    case 'thread_reply_published':
+      return {
+        explanation: 'AI reviewer successfully answered the discussion thread on the pull request review comment.',
+        nextStep: 'Check the review thread reply on GitHub.',
+      };
+    case 'provider_thread_reply_failed':
+      return {
+        explanation: 'Failed to generate thread explanation from the AI provider.',
+        nextStep: 'Wait a moment and reply with /review on the thread to retry.',
       };
     case 'all_files_exceeded_budgets':
       return {
@@ -202,6 +212,24 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         return finish({ status: 'skipped', reasonCode: 'comment_trigger_not_authorized', reviewedFiles: 0, publishedFindings: 0 });
       }
 
+    } else if (prDetails.eventName === 'pull_request_review_comment') {
+      const comment = (prDetails.commentBody || '').trim();
+      const isReviewTrigger =
+        /^\/(?:review|ai-review|ask|explain|why|recheck)(?:\s+.*)?$/i.test(comment) ||
+        Boolean(prDetails.inReplyToId);
+
+      if (!isReviewTrigger) {
+        status = 'skipped';
+        reasonCode = 'comment_not_a_trigger';
+        SafeLogger.info(`Skipping review comment #${prDetails.reviewCommentId}: comment is not a review trigger command`);
+        return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
+      }
+
+      if (prDetails.action !== 'created' || !prDetails.mayTriggerReview) {
+        SafeLogger.warning(`Skipping review comment #${prDetails.reviewCommentId}: author not authorized to trigger reviews`);
+        return finish({ status: 'skipped', reasonCode: 'comment_trigger_not_authorized', reviewedFiles: 0, publishedFindings: 0 });
+      }
+
     } else {
       if (prDetails.eventName !== 'pull_request') {
         SafeLogger.warning(`Skipping: event '${prDetails.eventName}' is not supported`);
@@ -256,6 +284,89 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     }
     SafeLogger.info('Security checks passed: repository event authorized, external provider permissions verified.');
     SafeLogger.endGroup();
+
+    // 2b. Handle inline code review thread replies / Q&A inquiries
+    if (prDetails.eventName === 'pull_request_review_comment') {
+      SafeLogger.startGroup('Thread Discussion & Reply');
+      const commentText = (prDetails.commentBody || '').trim();
+      SafeLogger.info(`Processing inline review comment #${prDetails.reviewCommentId} on ${prDetails.threadPath || 'code'}:${prDetails.threadLine || 0}`);
+
+      if (prDetails.reviewCommentId && client.addReviewCommentReaction) {
+        await client.addReviewCommentReaction(prDetails.reviewCommentId, 'eyes');
+      }
+
+      let parentFindingText: string | undefined;
+      if (prDetails.inReplyToId && client.fetchReviewComment) {
+        const parentComment = await client.fetchReviewComment(prDetails.inReplyToId);
+        if (parentComment?.body) {
+          parentFindingText = parentComment.body;
+          SafeLogger.info(`Loaded parent review comment finding (${parentComment.body.length} chars).`);
+        }
+      }
+
+      const cleanedQuestion = commentText.replace(/^\/(?:review|ai-review|ask|explain|why|recheck)\s*/i, '').trim() ||
+        'Please explain this finding and how to address it.';
+
+      const provider = customProvider ?? createProvider(config);
+      const threadInput: ReviewInput = {
+        files: [{
+          path: prDetails.threadPath || 'code',
+          patch: prDetails.diffHunk || '',
+        }],
+        maxFindings: 0,
+        language: config.reviewLanguage,
+        customInstructions: config.customInstructions,
+        threadContext: {
+          comment: cleanedQuestion,
+          originalFinding: parentFindingText,
+          diffHunk: prDetails.diffHunk,
+        },
+      };
+
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => abortController.abort(), 60000);
+      let replyExplanation: string | undefined;
+
+      try {
+        const result = await provider.review(threadInput, abortController.signal);
+        replyExplanation = result.summary;
+        if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;
+        if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
+      } catch (err: unknown) {
+        SafeLogger.error('Failed to generate thread explanation from AI provider.');
+        return finish({ status: 'partial', reasonCode: 'provider_thread_reply_failed', reviewedFiles: 1, publishedFindings: 0 });
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      if (!replyExplanation || !replyExplanation.trim()) {
+        replyExplanation = 'The recommended change is advised to adhere to production hygiene, security, and reliability standards. If this pattern is intentional in this context, feel free to keep it.';
+      }
+
+      const formattedReply = [
+        '> [!NOTE]',
+        `> ${sanitizeFindingContent(replyExplanation.trim())}`,
+      ].join('\n');
+
+      if (client.replyToReviewComment && prDetails.reviewCommentId) {
+        await client.replyToReviewComment(prDetails.pullNumber, prDetails.reviewCommentId, formattedReply);
+        SafeLogger.info('Successfully published reply to review comment thread.');
+      }
+
+      if (prDetails.reviewCommentId && client.addReviewCommentReaction) {
+        await client.addReviewCommentReaction(prDetails.reviewCommentId, 'rocket');
+      }
+
+      SafeLogger.endGroup();
+      return finish({
+        status: 'completed',
+        reasonCode: 'thread_reply_published',
+        reviewedFiles: 1,
+        publishedFindings: 1,
+        inputTokens,
+        outputTokens,
+      });
+    }
 
     // 3. File Selection & Exclusions Section
     SafeLogger.startGroup('File Selection & Exclusions');

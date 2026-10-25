@@ -26,6 +26,11 @@ export function assertReviewOnlyInput(input: {
   files: ReadonlyArray<{ path: string; patch: string }>;
   customInstructions?: string;
   relatedContext?: ReadonlyArray<{ path: string; content: string }>;
+  threadContext?: {
+    comment: string;
+    originalFinding?: string;
+    diffHunk?: string;
+  };
 }): void {
   if (!/^[\p{L}\p{M} -]{1,64}$/u.test(input.language) || hasPromptInjection(input.language)) {
     throw new Error('ai_guard_invalid_language');
@@ -44,5 +49,14 @@ export function assertReviewOnlyInput(input: {
   }
   if (input.customInstructions && hasPromptInjection(input.customInstructions)) {
     throw new Error('ai_guard_prompt_injection');
+  }
+  if (input.threadContext) {
+    const threadText = (input.threadContext.comment || '') + '\n' + (input.threadContext.originalFinding || '');
+    if (CREDENTIAL_MARKERS.some((pattern) => pattern.test(threadText))) {
+      throw new Error('ai_guard_credential_marker');
+    }
+    if (hasPromptInjection(threadText)) {
+      throw new Error('ai_guard_prompt_injection');
+    }
   }
 }

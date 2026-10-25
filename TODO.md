@@ -10,9 +10,11 @@ Action's logs, review comments, and plain-language suggestions.
 
 ## Current state
 
-- Released GitHub Action: `v0.2.14` (tested and bundled in `dist/index.js`).
+- Released GitHub Action: `v0.2.15` (tested and bundled in `dist/index.js`).
 - Implemented: file-patch incremental review, bounded JS/TS import context,
   exact-line evidence checks, severity filtering, and review-only guards.
+- Conversational inline review thread replies: answers developer questions on inline code
+  review comments (`pull_request_review_comment` event, e.g. `/review why is this needed?`, `/ask ...`).
 - Clearer Actions logs: collapsible groups for each stage, detailed file/exclusion/token counts,
   deterministic outcome explanations, workflow-command injection protection.
 - Enhanced PR comments: Issue & Impact, Recommended Action, optional Verification suggestion,

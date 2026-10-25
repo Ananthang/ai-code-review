@@ -163,6 +163,8 @@ on:
     types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -173,13 +175,15 @@ concurrency:
 
 jobs:
   review:
-    # Run on eligible PRs or authorized /review comments
+    # Run on eligible PRs or authorized /review comments & thread replies
     if: >-
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        !github.event.pull_request.draft) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
-       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review ')))
+       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review '))) ||
+      (github.event_name == 'pull_request_review_comment' &&
+       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review ') || startsWith(github.event.comment.body, '/ask ') || startsWith(github.event.comment.body, '/explain ')))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:

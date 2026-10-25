@@ -3,7 +3,7 @@ import { SafeLogger } from '../src/telemetry.js';
 import { formatFindingComment, formatSummaryComment } from '../src/github/comments.js';
 import { Finding, ParsedPatchFile } from '../src/types.js';
 import { FindingSchema, stripExecutableCodeBlocks, validateAndFilterFindings } from '../src/review/validate.js';
-import { getOutcomeDetails } from '../src/index.js';
+import { getOutcomeDetails, runReview } from '../src/index.js';
 
 describe('Log Masking and Workflow-Command Injection Resistance', () => {
   it('masks registered secrets and credentials in logs', () => {
@@ -344,5 +344,72 @@ Verify with a test.`;
     expect(summary).toContain('AI Code Review v2 is available! Update your workflow to uses: Ananthang/ai-code-review@\u200Bv2');
     expect(summary).not.toContain('<script>');
     expect(summary).toContain('&lt;script&gt;');
+  });
+});
+
+describe('Interactive Inline Review Thread Replies', () => {
+  it('replies directly to inline review comments when user asks questions', async () => {
+    process.env.GITHUB_TOKEN = 'ghp_mock_token_12345678901234567890';
+    process.env.AI_MODEL = 'gemini-2.5-flash';
+    const threadReplies: Array<{ commentId: number; body: string }> = [];
+    const reactions: Array<{ commentId: number; reaction: string }> = [];
+
+    const mockClient: any = {
+      getPullRequestDetails: async () => ({
+        owner: 'testowner',
+        repo: 'testrepo',
+        pullNumber: 6,
+        baseSha: 'base123',
+        headSha: 'head123',
+        isDraft: false,
+        isFork: false,
+        action: 'created',
+        eventName: 'pull_request_review_comment',
+        commentBody: '/review y this needed updated ?',
+        reviewCommentId: 101,
+        inReplyToId: 99,
+        threadPath: 'app/api/ai/captions/route.ts',
+        threadLine: 23,
+        diffHunk: '@@ -20,4 +20,4 @@\n+ console.log("PROVIDER_CAPACITY_MESSAGE", PROVIDER_CAPACITY_MESSAGE)',
+        mayTriggerReview: true,
+      }),
+      fetchReviewComment: async (id: number) => {
+        if (id === 99) {
+          return {
+            id: 99,
+            body: '### Low\n**Issue:** Leftover console.log statement.\n**Recommendation:** Remove console.log before production.',
+          };
+        }
+        return undefined;
+      },
+      replyToReviewComment: async (_pr: number, commentId: number, body: string) => {
+        threadReplies.push({ commentId, body });
+        return { id: 202 };
+      },
+      addReviewCommentReaction: async (commentId: number, reaction: string) => {
+        reactions.push({ commentId, reaction });
+      },
+    };
+
+    const fakeProvider: any = {
+      name: 'fake',
+      review: async () => ({
+        summary: 'Leaving console.log in backend API routes clutters server stdout and may leak runtime data in production.',
+        findings: [],
+        usage: { inputTokens: 150, outputTokens: 75 },
+      }),
+    };
+
+    const outcome = await runReview(mockClient, fakeProvider);
+
+    expect(outcome.status).toBe('completed');
+    expect(outcome.reasonCode).toBe('thread_reply_published');
+    expect(threadReplies).toHaveLength(1);
+    expect(threadReplies[0].commentId).toBe(101);
+    expect(threadReplies[0].body).toContain('Leaving console.log in backend API routes');
+    expect(reactions).toEqual([
+      { commentId: 101, reaction: 'eyes' },
+      { commentId: 101, reaction: 'rocket' },
+    ]);
   });
 });
