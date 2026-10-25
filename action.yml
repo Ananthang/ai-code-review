@@ -103,6 +103,10 @@ inputs:
   require-evidence:
     description: 'Require an exact added-source-line quote supporting every finding'
     default: 'true'
+  upgrade-notice:
+    description: 'Optional upgrade notice banner to alert developers on PR summaries and workflow annotations'
+    required: false
+    default: ''
 
 outputs:
   status:

@@ -9,12 +9,30 @@ export const FindingSchema = z.object({
   message: z.string().min(1).max(2000),
   recommendation: z.string().min(1).max(2000),
   evidence: z.string().min(1).max(1000).optional(),
-}).strict().refine((finding) => !isUnsafeReviewOutput(finding.message + '\n' + finding.recommendation + '\n' + (finding.evidence ?? '')), { message: 'AI guard rejected unsafe or off-task output' });
+  verification: z.string().min(1).max(1000).optional(),
+}).strict().refine((finding) => !isUnsafeReviewOutput(
+  finding.message + '\n' +
+  finding.recommendation + '\n' +
+  (finding.evidence ?? '') + '\n' +
+  (finding.verification ?? '')
+), { message: 'AI guard rejected unsafe or off-task output' });
 
 export const ProviderResponseSchema = z.object({
   summary: z.string().max(4000).optional(),
   findings: z.array(FindingSchema).max(50),
 }).strict().refine((response) => !response.summary || !isUnsafeReviewOutput(response.summary), { message: 'AI guard rejected unsafe summary' });
+
+/**
+ * Strips code fences and executable suggestion blocks to enforce
+ * plain-language remediation instructions without executable code patches.
+ */
+export function stripExecutableCodeBlocks(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/```(?:suggestion|diff|[a-z0-9_-]+)?\s*[\r\n]+([\s\S]*?)```/gi, '$1')
+    .replace(/```/g, '')
+    .trim();
+}
 
 /**
  * Neutralizes @ mentions and dangerous HTML in AI-generated strings
@@ -94,13 +112,15 @@ export function validateAndFilterFindings(
       continue;
     }
 
-    // Sanitize text content
+    // Sanitize and enforce plain-language suggestions (no executable code blocks)
     validFindings.push({
       path: filePatch.path,
       line: matchedLine,
       severity: finding.severity as Severity,
       message: sanitizeFindingContent(finding.message),
-      recommendation: sanitizeFindingContent(finding.recommendation),
+      recommendation: sanitizeFindingContent(stripExecutableCodeBlocks(finding.recommendation)),
+      evidence: finding.evidence ? sanitizeFindingContent(finding.evidence) : undefined,
+      verification: finding.verification ? sanitizeFindingContent(finding.verification) : undefined,
     });
   }
 

@@ -24,6 +24,7 @@ export interface SummaryData {
   dedupedCount: number;
   inputTokens?: number;
   outputTokens?: number;
+  providerReportedUsage?: boolean;
   overview?: string;
   findingsList?: Finding[];
   fallbackFromModel?: string;
@@ -31,6 +32,7 @@ export interface SummaryData {
   checkpoint?: string;
   incrementalSkipped?: number;
   contextFiles?: number;
+  upgradeNotice?: string;
 }
 
 const SEVERITY_ICONS: Record<Severity, string> = {
@@ -50,15 +52,20 @@ const SEVERITY_RANKS: Record<Severity, number> = {
 export function formatFindingComment(finding: Finding, fingerprint: string): string {
   const badge = SEVERITY_ICONS[finding.severity] || finding.severity.toUpperCase();
 
-  return [
+  const lines = [
     `### ${badge}`,
     '',
-    `**Issue:** ${finding.message}`,
+    `**Issue & Impact:** ${finding.message}`,
     '',
-    `**Recommendation:** ${finding.recommendation}`,
-    '',
-    `<!-- ai-code-review-fingerprint:v1:${fingerprint} -->`,
-  ].join('\n');
+    `**Recommended Action:** ${finding.recommendation}`,
+  ];
+
+  if (finding.verification && finding.verification.trim()) {
+    lines.push('', `**Verification:** ${finding.verification.trim()}`);
+  }
+
+  lines.push('', `<!-- ai-code-review-fingerprint:v1:${fingerprint} -->`);
+  return lines.join('\n');
 }
 
 function cleanMessage(text: string, maxLen = 100): string {
@@ -69,30 +76,38 @@ function cleanMessage(text: string, maxLen = 100): string {
 
 export function formatSummaryComment(data: SummaryData): string {
   const statusEmoji = data.status === 'completed' ? '✅' : data.status === 'partial' ? '⚠️' : 'ℹ️';
-  const cleanModel = data.model.replace(/^models\//, '');
+  const cleanModel = sanitizeFindingContent(data.model.replace(/^models\//, ''));
+  const cleanProvider = sanitizeFindingContent(data.provider);
   const fallbackTag = data.fallbackReason?.includes('503') ? 'fallback on 503' : 'fallback on 429';
   const modelDisplay = data.fallbackFromModel
-    ? `\`${data.provider}\` / \`${cleanModel}\` *(${fallbackTag})*`
-    : `\`${data.provider}\` / \`${cleanModel}\``;
+    ? `\`${cleanProvider}\` / \`${cleanModel}\` *(${fallbackTag})*`
+    : `\`${cleanProvider}\` / \`${cleanModel}\``;
 
   const lines: string[] = [
     `## ${statusEmoji} AI Code Review Summary`,
     '',
     `| Status | Provider & Model | Reviewed Files | Findings |`,
     `| :--- | :--- | :--- | :--- |`,
-    `| **${data.status.toUpperCase()}${data.reasonCode ? ` (${data.reasonCode})` : ''}** | ${modelDisplay} | **${data.reviewedFiles}** of ${data.totalChangedFiles} | **${data.publishedFindingsCount}** new (${data.dedupedCount} deduped) |`,
+    `| **${data.status.toUpperCase()}${data.reasonCode ? ` (${sanitizeFindingContent(data.reasonCode)})` : ''}** | ${modelDisplay} | **${data.reviewedFiles}** of ${data.totalChangedFiles} | **${data.publishedFindingsCount}** new (${data.dedupedCount} deduped) |`,
     '',
   ];
 
-  // Specific guidance banners for common operational events
+  if (data.upgradeNotice && data.upgradeNotice.trim()) {
+    lines.push('> [!IMPORTANT]');
+    lines.push('> ### 🔔 Action Upgrade Recommended');
+    lines.push(`> ${sanitizeFindingContent(data.upgradeNotice.trim())}`);
+    lines.push('');
+  }
+
+  // Specific provider-neutral guidance banners for common operational events
   if (data.reasonCode === 'provider_http_429' || data.reasonCode?.includes('429')) {
     lines.push('> [!WARNING]');
     lines.push('> ### ⏳ Rate Limit / Quota Exceeded (Too Many Requests)');
-    lines.push('> The AI review could not be completed because the API request quota or rate limit was reached.');
+    lines.push('> The review could not be completed because the AI provider request quota or rate limit was reached.');
     lines.push('>');
     lines.push('> **Why this happens:**');
-    lines.push('> - Free-tier AI models (e.g. Gemini 3.8 Flash) allow up to 15 requests per minute.');
-    lines.push('> - Rapid commits, re-runs, or multiple triggers on the same PR can briefly exhaust this quota.');
+    lines.push('> - Upstream AI providers enforce request rate limits per minute and token ceilings per window.');
+    lines.push('> - Rapid commits, concurrent PR workflows, or multi-file review triggers can temporarily exceed available capacity.');
     lines.push('>');
     lines.push('> **How to resume:**');
     lines.push('> 1. Wait **1 to 2 minutes** for the rate-limit window to reset.');
@@ -117,12 +132,12 @@ export function formatSummaryComment(data: SummaryData): string {
     lines.push('');
   } else if (data.reasonCode === 'provider_http_503' || data.reasonCode?.includes('503')) {
     lines.push('> [!WARNING]');
-    lines.push('> ### ⚠️ Gemini Model Temporarily Overloaded (HTTP 503)');
-    lines.push('> Google Gemini servers are temporarily experiencing high traffic or capacity limits.');
+    lines.push('> ### ⚠️ Upstream Provider Temporarily Overloaded (HTTP 503)');
+    lines.push('> The AI provider servers are temporarily experiencing high traffic or capacity limits.');
     lines.push('>');
     lines.push('> **Why this happens:**');
-    lines.push('> - Google Gemini occasionally returns HTTP 503 during momentary server-side traffic spikes.');
-    lines.push('> - This is a temporary upstream condition from Google, not an issue with your code.');
+    lines.push('> - Upstream AI providers occasionally return HTTP 503 during momentary server-side capacity spikes.');
+    lines.push('> - This is a temporary upstream service condition, not an issue with your code.');
     lines.push('>');
     lines.push('> **How to resume:**');
     lines.push('> - Wait **15 to 30 seconds** and comment `/review` on this PR to re-trigger.');
@@ -138,7 +153,7 @@ export function formatSummaryComment(data: SummaryData): string {
     data.status !== 'completed'
   ) {
     lines.push('> [!WARNING]');
-    lines.push(`> ### ⚠️ AI Provider Service Notice (\`${data.reasonCode}\`)`);
+    lines.push(`> ### ⚠️ AI Provider Service Notice (\`${sanitizeFindingContent(data.reasonCode)}\`)`);
     lines.push('> The AI provider encountered an issue while generating the review.');
     lines.push('>');
     lines.push('> **How to resume:**');
@@ -162,7 +177,7 @@ export function formatSummaryComment(data: SummaryData): string {
   } else if (data.reasonCode === 'provider_http_429' || data.reasonCode?.includes('429')) {
     lines.push('Review halted before completion due to API rate limiting (HTTP 429). See alert above for recovery steps.');
   } else if (data.reasonCode === 'provider_http_503' || data.reasonCode?.includes('503')) {
-    lines.push('Review halted because Google Gemini servers were temporarily overloaded (HTTP 503). See alert above to retry.');
+    lines.push('Review halted because upstream AI provider servers were temporarily overloaded (HTTP 503). See alert above to retry.');
   } else if (data.reasonCode === 'request_budget_exceeded' || data.reasonCode === 'all_files_exceeded_budgets') {
     lines.push('Review skipped because the PR changes exceeded the configured token or size limits.');
   } else if (data.reviewedFiles === 0) {
@@ -174,24 +189,32 @@ export function formatSummaryComment(data: SummaryData): string {
   }
   lines.push('');
 
-  // 2. Findings table / Verdict
+  // 2. Findings table / Verdict (Avoid labeling whole PR clean if only a subset was reviewed)
   if (data.findingsList && data.findingsList.length > 0) {
     lines.push('### 🔍 Key Findings & Recommendations');
     lines.push('');
-    lines.push('| Severity | Location | Issue | Recommendation |');
+    lines.push('| Severity | Location | Issue & Impact | Recommended Action |');
     lines.push('| :--- | :--- | :--- | :--- |');
 
     for (const f of data.findingsList) {
       const badge = SEVERITY_ICONS[f.severity] || f.severity.toUpperCase();
-      const loc = `\`${f.path}:${f.line}\``;
+      const loc = `\`${sanitizeFindingContent(f.path)}:${f.line}\``;
       const issue = cleanMessage(f.message, 100);
       const rec = cleanMessage(f.recommendation, 100);
       lines.push(`| ${badge} | ${loc} | ${issue} | ${rec} |`);
     }
     lines.push('');
   } else if (data.status === 'completed' && data.totalFindingsCount === 0) {
-    lines.push('### 🟢 Review Verdict: Clean');
-    lines.push('No defects, security issues, or regressions were identified in the reviewed changes.');
+    if (data.reviewedFiles === data.totalChangedFiles && (data.incrementalSkipped ?? 0) === 0) {
+      lines.push('### 🟢 Review Verdict: Clean');
+      lines.push('No defects or security issues were identified in the reviewed changes across all PR files.');
+    } else {
+      lines.push('### 🟢 Review Scope Verdict: Clean in Reviewed Changes');
+      lines.push(`No defects or security issues were identified in the **${data.reviewedFiles} reviewed file(s)** for this run.`);
+      lines.push('');
+      lines.push('> [!NOTE]');
+      lines.push(`> This incremental or scoped review evaluated a subset of changes (${data.reviewedFiles} of ${data.totalChangedFiles} total files). Earlier findings on unchanged files are preserved and were not reassessed in this run.`);
+    }
     lines.push('');
   }
 
@@ -205,7 +228,7 @@ export function formatSummaryComment(data: SummaryData): string {
   const reasonEntries = Object.entries(data.excludedReasons);
   if (reasonEntries.length > 0) {
     for (const [reason, count] of reasonEntries) {
-      lines.push(`  - \`${reason}\`: ${count}`);
+      lines.push(`  - \`${sanitizeFindingContent(reason)}\`: ${count}`);
     }
   }
 
@@ -215,8 +238,13 @@ export function formatSummaryComment(data: SummaryData): string {
 
   if (data.inputTokens !== undefined || data.outputTokens !== undefined) {
     lines.push('');
-    lines.push(`- **Estimated Input Tokens:** ${data.inputTokens ?? 0}`);
-    lines.push(`- **Output Tokens:** ${data.outputTokens ?? 0}`);
+    const inputTokenNote = data.providerReportedUsage
+      ? `- **Input Tokens:** ${data.inputTokens} *(reported by provider)*`
+      : `- **Estimated Input Tokens:** ~${data.inputTokens} *(conservative bound)*`;
+    lines.push(inputTokenNote);
+    if (data.outputTokens !== undefined) {
+      lines.push(`- **Output Tokens:** ${data.outputTokens}`);
+    }
   }
 
   lines.push('');

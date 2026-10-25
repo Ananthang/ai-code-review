@@ -5,8 +5,10 @@ A TypeScript GitHub Action for bounded, advisory pull-request feedback. Supports
 **Status: implemented POC, locally tested; not yet live-certified or production-ready.** Passing deterministic tests is not evidence of model accuracy, actual cost, or completion of the company-pilot gates.
 
 - [Code-review-only AI guard](docs/AI_GUARD.md)
-- [Implementation review and remaining issues](docs/IMPLEMENTATION_REVIEW.md)
+- [Low-cost review and security design](docs/LOW_COST_REVIEW.md)
+- [GitHub App architecture and rollout plan](docs/GITHUB_APP_ROLLOUT.md)
 - [Provider setup and behavior](docs/PROVIDERS.md)
+- [Implementation review and remaining issues](docs/IMPLEMENTATION_REVIEW.md)
 - [Product requirements](docs/PRD.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Delivery plan](docs/DELIVERY_PLAN.md)
@@ -15,34 +17,56 @@ A TypeScript GitHub Action for bounded, advisory pull-request feedback. Supports
 
 For this repository, `.github/workflows/review.yml` builds the trusted default branch and invokes the action. It does not build the PR head in the credential-bearing job. Optionally set repository variable `AI_PROVIDER` to `gemini`, `openai`, or `anthropic` (defaults to `gemini` when unset or empty), set `AI_MODEL` to an available model supporting the documented API/JSON behavior, and set secret `AI_PROVIDER_API_KEY` to that provider's key. Review provider terms and billing controls before enabling the workflow. Changes in this working tree must reach the trusted default branch before that workflow uses them.
 
-For another repository, publish the bundled action first, then replace `REVIEWED_ACTION_COMMIT_SHA` below with its full reviewed commit SHA. This is a template, not an assertion that a release tag exists.
+For client repositories, choose between two update models:
+- **Maintained moving tag (`@v1`)**: Automatically receive compatible enhancements and bug fixes without editing workflow files.
+- **Audited SHA pin (`@<commit-sha>`)**: Guarantee absolute immutability for strict enterprise compliance.
 
 ```yaml
-name: AI Review
+name: AI Code Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
+
 concurrency:
-  group: ai-review-${{ github.event.pull_request.number }}
+  group: ai-review-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
+
 jobs:
   review:
-    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       !github.event.pull_request.draft) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review ')))
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
     steps:
-      - uses: Ananthang/ai-code-review@REVIEWED_ACTION_COMMIT_SHA
+      - name: Run AI Code Review
+        uses: Ananthang/ai-code-review@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           provider: ${{ vars.AI_PROVIDER || 'gemini' }}
           model: ${{ vars.AI_MODEL }}
           provider-api-key: ${{ secrets.AI_PROVIDER_API_KEY }}
           allow-external-provider: 'true'
+          incremental: 'true'
+          min-severity: 'medium'
+          require-evidence: 'true'
 ```
+
+> [!NOTE]
+> This workflow safely uses GitHub API calls to inspect diffs and does not checkout or execute untrusted PR code in the runner. For central hosted deployment without workflows, see the [GitHub App rollout design](docs/GITHUB_APP_ROLLOUT.md).
 
 For local Ollama, use the separate instructions in [PROVIDERS.md](docs/PROVIDERS.md); a hosted GitHub runner cannot reach a server on your laptop through its own localhost.
 
@@ -71,6 +95,7 @@ For local Ollama, use the separate instructions in [PROVIDERS.md](docs/PROVIDERS
 | `thinking-level` | `low`; reasoning depth: `minimal`, `low`, `medium`, `high` (for Gemini 3 & 2.5) |
 | `fail-on-error` | `false`; set to `true` to fail the GitHub Actions step if the AI review fails |
 | `custom-instructions` | Optional; inline rules, or path to a file in the project (defaults to auto-detecting `.github/ai-review.md`) |
+| `upgrade-notice` | Optional; prominent upgrade notice banner displayed on PR review summaries and workflow annotations (or via `AI_UPGRADE_NOTICE` env var) |
 
 Only included added lines can receive findings. Fork/draft PRs are skipped. Prompt framing and exclusions reduce risk but cannot eliminate injection, secret exposure, or false positives. No reviewed code is executed by the action itself. No approvals or change requests are submitted.
 

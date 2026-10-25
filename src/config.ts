@@ -46,6 +46,7 @@ export const ConfigSchema = z.object({
   maxContextBytes: z.number().int().min(0).max(8192).default(2048),
   minSeverity: z.enum(['critical', 'high', 'medium', 'low']).default('medium'),
   requireEvidence: z.boolean().default(true),
+  upgradeNotice: z.string().optional(),
 });
 
 function parseSplitLines(raw: string): string[] {
@@ -278,6 +279,9 @@ export function parseConfig(overrides?: Partial<Config>, workspaceRoot?: string)
     maxContextBytes: overrides?.maxContextBytes ?? parseNumberInput(core.getInput('max-context-bytes'), 2048),
     minSeverity: overrides?.minSeverity ?? (core.getInput('min-severity') || 'medium'),
     requireEvidence: overrides?.requireEvidence ?? parseBooleanInput(core.getInput('require-evidence'), true),
+    upgradeNotice: overrides?.upgradeNotice !== undefined
+      ? overrides.upgradeNotice
+      : (core.getInput('upgrade-notice') || process.env.AI_UPGRADE_NOTICE || '').trim() || undefined,
   };
 
   const parsed = ConfigSchema.safeParse(rawConfig);

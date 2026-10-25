@@ -7,6 +7,7 @@ export interface Finding {
   message: string;
   recommendation: string;
   evidence?: string;
+  verification?: string;
 }
 
 export interface ReviewInput {
@@ -91,4 +92,5 @@ export interface Config {
   maxContextBytes?: number;
   minSeverity?: Severity;
   requireEvidence?: boolean;
+  upgradeNotice?: string;
 }

@@ -15,6 +15,7 @@ export interface TelemetryEvent {
 
 export class SafeLogger {
   private static registeredSecrets: string[] = [];
+  private static activeGroups: string[] = [];
 
   public static registerSecret(secret: string): void {
     if (secret && secret.length > 3) {
@@ -36,7 +37,32 @@ export class SafeLogger {
       .replace(/AIza[0-9A-Za-z\\-_]{35}/g, '[REDACTED_KEY]')
       .replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_KEY]');
 
+    // Prevent workflow command injection by neutralizing lines starting with :: or \r\n::
+    sanitized = sanitized
+      .replace(/^::/gm, ': :')
+      .replace(/(?:\r\n|\n)::/g, '\n: :');
+
     return sanitized;
+  }
+
+  public static startGroup(name: string): void {
+    const safeName = this.sanitize(name).replace(/[\r\n]+/g, ' ').trim();
+    this.activeGroups.push(safeName);
+    core.startGroup(safeName);
+  }
+
+  public static endGroup(): void {
+    if (this.activeGroups.length > 0) {
+      this.activeGroups.pop();
+      core.endGroup();
+    }
+  }
+
+  public static closeAllGroups(): void {
+    while (this.activeGroups.length > 0) {
+      this.activeGroups.pop();
+      core.endGroup();
+    }
   }
 
   public static info(message: string): void {

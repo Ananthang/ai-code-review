@@ -34,6 +34,25 @@ describe('Configuration parsing & limit ceilings', () => {
     expect(config.maxRequests).toBe(1);
   });
 
+  it('parses upgrade-notice override and environment variable', () => {
+    const config = parseConfig({
+      githubToken: 'ghp_fake_token',
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      upgradeNotice: 'Version 2.0 released',
+    });
+    expect(config.upgradeNotice).toBe('Version 2.0 released');
+
+    process.env.AI_UPGRADE_NOTICE = 'Env upgrade alert';
+    const configEnv = parseConfig({
+      githubToken: 'ghp_fake_token',
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+    });
+    expect(configEnv.upgradeNotice).toBe('Env upgrade alert');
+    delete process.env.AI_UPGRADE_NOTICE;
+  });
+
   it('throws when model is missing from all inputs and env vars', () => {
     delete process.env.AI_MODEL;
     delete process.env.MODEL;

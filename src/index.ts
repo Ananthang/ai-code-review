@@ -17,6 +17,118 @@ import { publishFindingsAndSummary } from './github/comments.js';
 import { ingestStaticReports } from './analyzers/static.js';
 import { SafeLogger } from './telemetry.js';
 
+export function getOutcomeDetails(status: ReviewStatus, reasonCode?: string): { explanation: string; nextStep: string } {
+  switch (reasonCode) {
+    case 'fork_pr_skipped':
+      return {
+        explanation: 'Fork pull requests are excluded to prevent secret exposure and untrusted execution.',
+        nextStep: 'Maintainers can test changes on a local or trusted branch.',
+      };
+    case 'draft_pr_skipped':
+      return {
+        explanation: 'Draft pull requests are skipped to conserve review quotas on work-in-progress code.',
+        nextStep: 'Mark the pull request as "Ready for review" and comment /review to trigger a review.',
+      };
+    case 'comment_not_a_trigger':
+      return {
+        explanation: 'The comment was not a recognized review command.',
+        nextStep: 'Use "/review" or "/review <path>" to trigger an on-demand review.',
+      };
+    case 'comment_trigger_not_authorized':
+      return {
+        explanation: 'The comment author does not have write or maintain access to this repository.',
+        nextStep: 'Only authorized repository collaborators may trigger AI reviews via comment.',
+      };
+    case 'unsupported_pr_action':
+      return {
+        explanation: 'Only pull request opened, synchronize, or reopened actions are reviewed.',
+        nextStep: 'Push new commits to the branch or comment /review to re-trigger.',
+      };
+    case 'unsupported_event':
+      return {
+        explanation: 'The workflow was triggered by an event other than pull_request or issue_comment.',
+        nextStep: 'Ensure workflow triggers include pull_request and issue_comment.',
+      };
+    case 'external_provider_opt_in_required':
+      return {
+        explanation: 'allow-external-provider is false; explicit opt-in is required before diffs leave GitHub.',
+        nextStep: 'Set "allow-external-provider: true" in your workflow step inputs.',
+      };
+    case 'missing_provider_api_key':
+      return {
+        explanation: 'No API key was supplied for the selected external AI provider.',
+        nextStep: 'Provide provider-api-key in workflow inputs via repository secrets (e.g. AI_PROVIDER_API_KEY).',
+      };
+    case 'no_eligible_files':
+      return {
+        explanation: 'No eligible files remained to review after applying path and credential exclusions.',
+        nextStep: 'Ensure changes modify non-excluded, non-binary source files.',
+      };
+    case 'ai_guard_files_skipped':
+      return {
+        explanation: 'Files containing recognized prompt injection patterns were excluded from review.',
+        nextStep: 'Inspect excluded diffs manually for adversarial content or prompt injection.',
+      };
+    case 'target_file_not_found':
+      return {
+        explanation: 'The file specified in /review <file> was not modified in this pull request.',
+        nextStep: 'Verify the file path against the PR diff and try again.',
+      };
+    case 'all_files_exceeded_budgets':
+      return {
+        explanation: 'All modified files exceeded configured per-file size or total input token budgets.',
+        nextStep: 'Review individual files using "/review <path>" or increase max-input-tokens / max-file-bytes.',
+      };
+    case 'unchanged_since_review':
+      return {
+        explanation: 'All eligible files were previously reviewed at matching policy and remain unchanged.',
+        nextStep: 'Push new commits or comment /review to force a fresh review.',
+      };
+    case 'provider_http_429':
+      return {
+        explanation: 'AI provider rate limit or quota ceiling was exceeded (HTTP 429).',
+        nextStep: 'Wait 1 to 2 minutes for rate-limit reset, then comment /review on this PR.',
+      };
+    case 'provider_http_503':
+      return {
+        explanation: 'Upstream AI provider reported temporary service unavailability or capacity limits (HTTP 503).',
+        nextStep: 'Wait 15 to 30 seconds and comment /review on this PR to retry.',
+      };
+    case 'invalid_findings_dropped':
+      return {
+        explanation: 'One or more findings from the AI provider failed schema validation or added-line checks.',
+        nextStep: 'Valid findings were published; invalid/ungrounded findings were dropped.',
+      };
+    case 'stale_head_discarded':
+      return {
+        explanation: 'PR head commit changed during execution; findings for the obsolete commit were discarded.',
+        nextStep: 'The latest commit will be reviewed automatically or can be re-triggered by commenting /review.',
+      };
+    case 'publication_incomplete':
+      return {
+        explanation: 'One or more review comments could not be published to GitHub API.',
+        nextStep: 'Ensure GITHUB_TOKEN has pull-requests:write and issues:write permissions.',
+      };
+    case 'unexpected_error':
+    case 'timeout':
+      return {
+        explanation: 'Review execution failed or exceeded the request timeout.',
+        nextStep: 'Check workflow run details and comment /review to retry.',
+      };
+    default:
+      if (status === 'completed') {
+        return {
+          explanation: 'AI code review completed successfully within configured budgets.',
+          nextStep: 'Review published inline comments and summary table on the pull request.',
+        };
+      }
+      return {
+        explanation: `Review finished with status "${status}" (${reasonCode ?? 'no reason code'}).`,
+        nextStep: 'Check logs above and re-trigger with /review if needed.',
+      };
+  }
+}
+
 export async function runReview(customClient?: GitHubClient, customProvider?: AIProvider): Promise<ReviewOutcome> {
   const startTime = Date.now();
   let status: ReviewStatus = 'completed';
@@ -25,9 +137,17 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
   let publishedCount = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  let providerReportedUsage = false;
   // Read this before validation so malformed configuration also respects fail-on-error.
   let failOnError = ['true', '1', 'yes'].includes(core.getInput('fail-on-error').trim().toLowerCase());
+
   const finish = (outcome: ReviewOutcome): ReviewOutcome => {
+    SafeLogger.closeAllGroups();
+    const durationMs = Date.now() - startTime;
+    const { explanation, nextStep } = getOutcomeDetails(outcome.status, outcome.reasonCode);
+    SafeLogger.info(`Outcome: ${outcome.status}${outcome.reasonCode ? ` (${outcome.reasonCode})` : ''} - ${explanation}`);
+    SafeLogger.info(`Next step: ${nextStep} (elapsed: ${durationMs}ms)`);
+
     const result = setActionOutputs(outcome);
     if (failOnError && (outcome.status === 'failed' || outcome.status === 'partial')) {
       core.setFailed(`AI Code Review incomplete: ${outcome.reasonCode ?? outcome.status}`);
@@ -36,7 +156,8 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
   };
 
   try {
-    // 1. Parse configuration and validate limits
+    // 1. Setup & Configuration Section
+    SafeLogger.startGroup('Setup & Configuration');
     const config = parseConfig();
     failOnError = config.failOnError;
 
@@ -50,9 +171,20 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     const client = customClient ?? new OctokitGitHubClient(config.githubToken);
     const prDetails = await client.getPullRequestDetails();
 
-    SafeLogger.info(`Starting AI code review for PR #${prDetails.pullNumber} on ${prDetails.owner}/${prDetails.repo}`);
+    SafeLogger.info(`Target: PR #${prDetails.pullNumber} on ${prDetails.owner}/${prDetails.repo}`);
+    SafeLogger.info(`Provider: ${config.provider} | Model: ${config.model || 'default'} | Fallback: ${config.fallbackModel || 'none'}`);
+    SafeLogger.info(`Budgets: max-files=${config.maxFiles}, max-file-bytes=${config.maxFileBytes}, max-input-tokens=${config.maxInputTokens}, max-requests=${config.maxRequests}`);
+    SafeLogger.info(`Policies: min-severity=${config.minSeverity ?? 'medium'}, require-evidence=${config.requireEvidence ?? true}, incremental=${config.incremental ?? true}`);
+    if (config.upgradeNotice) {
+      core.notice(config.upgradeNotice, { title: 'AI Code Review: Upgrade Recommended' });
+      SafeLogger.warning(`Upgrade notice active: ${config.upgradeNotice}`);
+    }
+    SafeLogger.endGroup();
 
-    // 2. Validate event and PR attributes (FR-01)
+    // 2. Security & Authorization Section
+    SafeLogger.startGroup('Security & Authorization');
+    SafeLogger.info(`Event: ${prDetails.eventName} | Action: ${prDetails.action} | Base SHA: ${prDetails.baseSha.slice(0, 7)} | Head SHA: ${prDetails.headSha.slice(0, 7)}`);
+
     if (prDetails.eventName === 'issue_comment') {
       const comment = (prDetails.commentBody || '').trim().toLowerCase();
       const isReviewTrigger =
@@ -66,11 +198,13 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       }
 
       if (prDetails.action !== 'created' || !prDetails.mayTriggerReview) {
+        SafeLogger.warning(`Skipping PR #${prDetails.pullNumber}: comment author is not authorized to trigger reviews`);
         return finish({ status: 'skipped', reasonCode: 'comment_trigger_not_authorized', reviewedFiles: 0, publishedFindings: 0 });
       }
 
     } else {
       if (prDetails.eventName !== 'pull_request') {
+        SafeLogger.warning(`Skipping: event '${prDetails.eventName}' is not supported`);
         return finish({ status: 'skipped', reasonCode: 'unsupported_event', reviewedFiles: 0, publishedFindings: 0 });
       }
       const allowedActions = ['opened', 'synchronize', 'reopened'];
@@ -96,7 +230,6 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
-    // 3. Provider validation & external provider opt-in check (FR-05, FR-10)
     const effectiveProvider = customProvider ? customProvider.name : config.provider;
 
     if (['gemini', 'openai', 'anthropic'].includes(effectiveProvider)) {
@@ -121,12 +254,18 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       SafeLogger.warning(`Diff review skipped: provider '${effectiveProvider}' is not supported in this version.`);
       return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
+    SafeLogger.info('Security checks passed: repository event authorized, external provider permissions verified.');
+    SafeLogger.endGroup();
 
-    // 4. GitHub API diff collection and exclusions (FR-02, FR-03)
+    // 3. File Selection & Exclusions Section
+    SafeLogger.startGroup('File Selection & Exclusions');
     const { files: ghFiles, isComplete } = await client.fetchPullRequestFiles(prDetails.pullNumber);
     if (!isComplete) {
+      SafeLogger.warning('Pull request file inventory was incomplete.');
       return finish({ status: 'skipped', reasonCode: 'incomplete_file_inventory', reviewedFiles: 0, publishedFindings: 0 });
     }
+
+    SafeLogger.info(`Fetched ${ghFiles.length} changed file(s) from GitHub API.`);
 
     const exclusionFilter = new PathExclusionFilter(config.excludePatterns);
     const eligiblePatchFiles: ParsedPatchFile[] = [];
@@ -138,17 +277,19 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
     const isTargetFileInPR = prDetails.targetFile && ghFiles.some((f) => f.filename === prDetails.targetFile);
     if (prDetails.targetFile && !isTargetFileInPR) {
+      SafeLogger.warning(`Target file "${prDetails.targetFile}" requested in /review command was not found in PR changes.`);
       return finish({ status: 'skipped', reasonCode: 'target_file_not_found', reviewedFiles: 0, publishedFindings: 0 });
     }
     const effectiveTargetFile = prDetails.targetFile;
+    if (effectiveTargetFile) {
+      SafeLogger.info(`Target file filter active: reviewing only "${effectiveTargetFile}".`);
+    }
 
     for (const ghFile of ghFiles) {
       const filePath = ghFile.filename;
 
-      if (effectiveTargetFile) {
-        if (filePath !== effectiveTargetFile) {
-          continue;
-        }
+      if (effectiveTargetFile && filePath !== effectiveTargetFile) {
+        continue;
       }
 
       if (ghFile.status === 'removed') {
@@ -190,31 +331,43 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       eligiblePatchFiles.push(parsedResult.parsed);
     }
 
+    SafeLogger.info(`Eligible patch files: ${eligiblePatchFiles.length} of ${ghFiles.length}`);
+    const exclusionEntries = Object.entries(excludedReasons);
+    if (exclusionEntries.length > 0) {
+      SafeLogger.info(`Exclusions breakdown: ${exclusionEntries.map(([r, c]) => `${r}=${c}`).join(', ')}`);
+    }
+
     if (eligiblePatchFiles.length === 0) {
       status = 'skipped';
       reasonCode = excludedReasons.ai_guard_prompt_injection ? 'ai_guard_files_skipped' : 'no_eligible_files';
       SafeLogger.info('No eligible files to review after exclusions.');
       return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
+    SafeLogger.endGroup();
 
-    // Context is bounded, screened and fetched at an immutable PR SHA.
+    // 4. Budget & Context Selection Section
+    SafeLogger.startGroup('Budget & Context Selection');
     const availableContext = await collectContext(client, prDetails.headSha,
       eligiblePatchFiles, exclusionFilter, config.maxContextBytes ?? 2048);
     const policyKey = reviewPolicyKey(config, prDetails.baseSha, availableContext);
     let relatedContext: Array<{ path: string; content: string }> = [];
     let previousKeys = new Set<string>();
-    // Manual commands deliberately force a fresh review, including targeted requests.
+
     if (config.incremental && prDetails.eventName === 'pull_request' && !config.staticReportPaths.length) {
       try { previousKeys = readCheckpoint(await client.fetchIssueComments(prDetails.pullNumber), policyKey); }
       catch { /* Missing state falls back to a full bounded review. */ }
     }
     const pendingFiles = eligiblePatchFiles.filter(file => !previousKeys.has(fileKey(file)));
     const incrementalSkipped = eligiblePatchFiles.length - pendingFiles.length;
+    if (incrementalSkipped > 0) {
+      SafeLogger.info(`Incremental checkpoint match: ${incrementalSkipped} unchanged file(s) skipped.`);
+    }
+
     if (!pendingFiles.length) {
+      SafeLogger.info('All eligible files were reviewed in previous checkpoint; nothing to review.');
       return finish({ status: status === 'partial' ? status : 'skipped', reasonCode: reasonCode ?? 'unchanged_since_review', reviewedFiles: 0, publishedFindings: 0 });
     }
 
-    // 5. Budget enforcement (FR-04)
     const provider = customProvider ?? createProvider(config);
     const measureInput = (files: ReviewInput['files'], context = relatedContext) => {
       const input = { files, maxFindings: config.maxFindings, language: config.reviewLanguage,
@@ -259,6 +412,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
             excludedReasons,
             inputTokens: 0,
             outputTokens: 0,
+            upgradeNotice: config.upgradeNotice,
           },
           config.maxFindings
         );
@@ -274,7 +428,6 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       return finish({ status, reasonCode, reviewedFiles: 0, publishedFindings: 0 });
     }
 
-    // Diff coverage takes priority; optional context uses only the remaining request budget.
     const selectedFiles = budget.includedFiles.map(({ path, patch }) => ({ path, patch }));
     for (const context of availableContext) {
       const candidate = [...relatedContext, context];
@@ -285,7 +438,9 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
     reviewedFilesCount = budget.includedFiles.length;
     inputTokens = budget.estimatedTokens;
-    SafeLogger.info(`Reviewing ${reviewedFilesCount} files (~${inputTokens} estimated input tokens)`);
+    SafeLogger.info(`Selected ${reviewedFilesCount} file(s) for review (~${inputTokens} conservative estimated input tokens).`);
+    SafeLogger.info(`Related context files: ${relatedContext.length} included out of ${availableContext.length} candidate(s).`);
+    SafeLogger.endGroup();
 
     const filePatchMap = new Map<string, ParsedPatchFile>();
     for (const file of budget.includedFiles) {
@@ -295,22 +450,25 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     await reactToReviewStart(client, prDetails);
 
     if (config.customInstructions) {
-      SafeLogger.info('Applying custom review guidelines / instructions.');
+      SafeLogger.info('Custom review instructions / guidelines active.');
     }
 
     let effectiveModel = config.model;
     let fallbackFromModel: string | undefined;
     let fallbackReason: string | undefined;
 
-    SafeLogger.info(`Sending ${reviewedFilesCount} file(s) to ${effectiveProvider} (${config.model || 'default'})...`);
+    // 5. Provider Execution Section
+    SafeLogger.startGroup('Provider Execution');
+    SafeLogger.info(`Sending ${reviewedFilesCount} file(s) to ${effectiveProvider} (${config.model || 'default'}) [attempt 1 of ${config.maxRequests}]...`);
 
-    // 6. Provider execution with 120-second timeout (gives reasoning models like gemini-3.8-flash sufficient time)
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), 120000); // 120s provider timeout
 
     let rawFindings: Finding[] = [];
     let aiSummary: string | undefined;
     let reviewSucceeded = false;
+    const providerStartTime = Date.now();
+
     try {
       const reviewInput: ReviewInput = {
         files: budget.includedFiles.map((f) => ({ path: f.path, patch: f.patch })),
@@ -321,10 +479,14 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       };
 
       const result = await provider.review(reviewInput, abortController.signal);
-      SafeLogger.info('AI review response received from provider. Validating findings...');
+      const providerDuration = Date.now() - providerStartTime;
+      SafeLogger.info(`AI review response received from provider (${providerDuration}ms).`);
       rawFindings = result.findings;
       aiSummary = result.summary;
-      if (result.usage?.inputTokens) inputTokens = result.usage.inputTokens;
+      if (result.usage?.inputTokens) {
+        inputTokens = result.usage.inputTokens;
+        providerReportedUsage = true;
+      }
       if (result.usage?.outputTokens) outputTokens = result.usage.outputTokens;
       reviewSucceeded = true;
     } catch (providerErr: unknown) {
@@ -338,7 +500,6 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
           ? providerErr.message
           : 'provider_request_failed';
 
-      // If rate limited (429) or overloaded (503) and an explicit fallback model is configured, attempt fallback
       const isCapacityError =
         code === 'provider_http_429' ||
         code.includes('429') ||
@@ -356,9 +517,9 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         config.maxRequests >= 2
       ) {
         const fallbackTargetModel = config.fallbackModel!;
-        const errorLabel = code.includes('503') ? 'overloaded (503)' : 'rate limited (429)';
+        const errorLabel = code.includes('503') ? 'capacity limit (HTTP 503)' : 'rate limit (HTTP 429)';
         SafeLogger.warning(
-          `Primary model "${config.model}" ${errorLabel}. Attempting configured fallback model: "${fallbackTargetModel}"...`
+          `Primary model "${config.model}" encountered ${errorLabel}. Attempting fallback model: "${fallbackTargetModel}" [attempt 2 of ${config.maxRequests}]...`
         );
         const fallbackAbortController = new AbortController();
         const fallbackTimeout = setTimeout(() => fallbackAbortController.abort(), 120000);
@@ -374,12 +535,16 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
             customInstructions: config.customInstructions,
             relatedContext, minSeverity: config.minSeverity, requireEvidence: config.requireEvidence,
           };
+          const fbStartTime = Date.now();
           const fbResult = await fallbackProvider.review(reviewInput, fallbackAbortController.signal);
           clearTimeout(fallbackTimeout);
-          SafeLogger.info('AI review response received from fallback model. Validating findings...');
+          SafeLogger.info(`AI review response received from fallback model (${Date.now() - fbStartTime}ms).`);
           rawFindings = fbResult.findings;
           aiSummary = fbResult.summary;
-          if (fbResult.usage?.inputTokens) inputTokens = fbResult.usage.inputTokens;
+          if (fbResult.usage?.inputTokens) {
+            inputTokens = fbResult.usage.inputTokens;
+            providerReportedUsage = true;
+          }
           if (fbResult.usage?.outputTokens) outputTokens = fbResult.usage.outputTokens;
           effectiveModel = fallbackTargetModel;
           fallbackFromModel = config.model;
@@ -423,13 +588,14 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
               excludedReasons,
               inputTokens,
               outputTokens,
+              providerReportedUsage,
+              upgradeNotice: config.upgradeNotice,
             },
             config.maxFindings
           );
         } catch {
           // Safe fallback if GitHub comment publishing fails
         }
-
 
         return finish({
           status,
@@ -444,8 +610,18 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
       clearTimeout(timeout);
     }
 
+    if (providerReportedUsage) {
+      SafeLogger.info(`Token usage (provider-reported): inputTokens=${inputTokens}, outputTokens=${outputTokens}`);
+    } else {
+      SafeLogger.info(`Token usage (conservative estimate): ~${inputTokens} inputTokens, ${outputTokens} outputTokens`);
+    }
+    SafeLogger.endGroup();
+
+    // 6. Validation & Safeguards Section
+    SafeLogger.startGroup('Validation & Safeguards');
+    SafeLogger.info(`Received ${rawFindings.length} raw finding(s) from AI model.`);
+
     let staticFindings: Finding[] = [];
-    // 7. Optional static analysis report ingestion (FR-09)
     if (config.staticReportPaths.length > 0) {
       SafeLogger.info(`Ingesting ${config.staticReportPaths.length} static report path(s)...`);
       const staticResult = ingestStaticReports({
@@ -453,26 +629,29 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         expectedHeadSha: prDetails.headSha,
         filePatchMap,
       });
-      SafeLogger.info(`Ingested ${staticResult.findings.length} findings from ${staticResult.processedReports} report(s)`);
+      SafeLogger.info(`Ingested ${staticResult.findings.length} findings from ${staticResult.processedReports} report(s).`);
       if (staticResult.skippedReports.length) { status = 'partial'; reasonCode = 'static_reports_skipped'; }
       staticFindings = staticResult.findings;
     }
 
-    // 8. Runtime schema & added-line validation (FR-06, FR-07)
     const { validFindings, droppedFindings } = validateAndFilterFindings(rawFindings, { filePatchMap, minSeverity: config.minSeverity, requireEvidence: config.requireEvidence });
     const staticValidation = validateAndFilterFindings(staticFindings, { filePatchMap, minSeverity: config.minSeverity });
     validFindings.push(...staticValidation.validFindings);
     droppedFindings.push(...staticValidation.droppedFindings);
+
+    SafeLogger.info(`Validation results: ${validFindings.length} valid finding(s), ${droppedFindings.length} dropped/filtered.`);
+
     if (droppedFindings.length > 0) {
       status = 'partial';
       reasonCode = 'invalid_findings_dropped';
-      SafeLogger.warning(`Dropped ${droppedFindings.length} invalid finding(s) (out of bounds or malformed):`);
       for (const d of droppedFindings) {
-        SafeLogger.warning(`- ${d.reason}`);
+        SafeLogger.warning(`Dropped finding reason: ${d.reason}`);
       }
     }
+    SafeLogger.endGroup();
 
-    // 9. Reconcile, deduplicate, recheck head SHA and publish comments (FR-07, FR-08, FR-12)
+    // 7. Publication & Telemetry Section
+    SafeLogger.startGroup('Publication & Telemetry');
     const repoFullName = `${prDetails.owner}/${prDetails.repo}`;
     const publishResult = await publishFindingsAndSummary(
       client,
@@ -491,11 +670,13 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
         excludedReasons,
         inputTokens,
         outputTokens,
+        providerReportedUsage,
         overview: aiSummary,
         fallbackFromModel,
         fallbackReason,
         incrementalSkipped,
         contextFiles: relatedContext.length,
+        upgradeNotice: config.upgradeNotice,
         checkpoint: status === 'completed' && !config.staticReportPaths.length
           ? checkpointMarker(policyKey, [...previousKeys, ...budget.includedFiles.map(fileKey)]) : undefined,
       },
@@ -519,7 +700,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
 
     if (publishResult.errors.length) { status = 'partial'; reasonCode = 'publication_incomplete'; }
     publishedCount = publishResult.publishedCount;
-    SafeLogger.info(`Published ${publishedCount} new inline findings (deduped: ${publishResult.dedupedCount})`);
+    SafeLogger.info(`Published ${publishedCount} new inline finding comment(s) (deduped: ${publishResult.dedupedCount}).`);
 
     const durationMs = Date.now() - startTime;
     SafeLogger.logMetrics({
@@ -537,6 +718,7 @@ export async function runReview(customClient?: GitHubClient, customProvider?: AI
     if (prDetails.commentId && client.addCommentReaction) {
       await client.addCommentReaction(prDetails.commentId, 'rocket');
     }
+    SafeLogger.endGroup();
 
     return finish({
       status,
