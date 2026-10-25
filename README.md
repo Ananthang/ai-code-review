@@ -21,12 +21,8 @@ For client repositories, choose between two update models:
 - **Maintained moving tag (`@v1`)**: Automatically receive compatible enhancements and bug fixes without editing workflow files.
 - **Audited SHA pin (`@<commit-sha>`)**: Guarantee absolute immutability for strict enterprise compliance.
 
-### Option 1: Simplified Reusable Workflow (Recommended)
-
-Eliminates complex `if:` expressions, manual concurrency definitions, and code checkouts. The reusable workflow runs a fast read-only preflight check before starting the review job:
-
 ```yaml
-name: AI Review
+name: AI Code Review
 
 on:
   pull_request:
@@ -41,60 +37,17 @@ permissions:
   pull-requests: write
   issues: write
 
-jobs:
-  review:
-    uses: Ananthang/ai-code-review/.github/workflows/client-review.yml@v1
-    with:
-      provider: ${{ vars.AI_PROVIDER || 'gemini' }}
-      model: ${{ vars.AI_MODEL }}
-      allow-external-provider: true
-    secrets:
-      provider-api-key: ${{ secrets.AI_PROVIDER_API_KEY }}
-```
-
-### Option 2: Direct Action Step (Advanced)
-
-For workflows requiring custom runners, multi-step orchestration, or custom checkout steps:
-
-```yaml
-name: AI Code Review
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
-
-permissions:
-  contents: read
-
 concurrency:
   group: ai-review-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
   review:
-    if: >-
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository &&
-       !github.event.pull_request.draft) ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
-       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review '))) ||
-      (github.event_name == 'pull_request_review_comment' &&
-       (github.event.comment.body == '/review' || startsWith(github.event.comment.body, '/review ') || startsWith(github.event.comment.body, '/ask ') || startsWith(github.event.comment.body, '/explain ')))
     runs-on: ubuntu-latest
-    timeout-minutes: 3
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-
     steps:
       - name: Run AI Code Review
         uses: Ananthang/ai-code-review@v1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           provider: ${{ vars.AI_PROVIDER || 'gemini' }}
           model: ${{ vars.AI_MODEL }}
           provider-api-key: ${{ secrets.AI_PROVIDER_API_KEY }}
