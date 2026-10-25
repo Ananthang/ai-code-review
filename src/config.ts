@@ -49,11 +49,36 @@ export const ConfigSchema = z.object({
   upgradeNotice: z.string().optional(),
 });
 
-function parseSplitLines(raw: string): string[] {
+export function parseSplitLines(raw: string): string[] {
   if (!raw || !raw.trim()) return [];
-  return raw
+  const trimmed = raw.trim();
+
+  // 1. JSON array support: e.g. ["**/*.test.ts", "docs/**"]
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((s) => (typeof s === 'string' ? s.trim() : String(s).trim()))
+          .map((s) => s.replace(/^['"]+|['"]+$/g, '').trim())
+          .filter((s) => s.length > 0);
+      }
+    } catch {
+      // Fall through to line/comma splitting
+    }
+  }
+
+  // 2. Line or comma splitting; strip bullet dashes, surrounding quotes and outer brackets
+  let content = trimmed;
+  if (content.startsWith('[') && content.endsWith(']')) {
+    content = content.slice(1, -1).trim();
+  }
+
+  return content
     .split(/[\r\n,]+/)
     .map((s) => s.trim())
+    .map((s) => s.replace(/^[-*]\s+/, '').trim())
+    .map((s) => s.replace(/^['"]+|['"]+$/g, '').trim())
     .filter((s) => s.length > 0);
 }
 

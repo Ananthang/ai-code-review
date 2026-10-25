@@ -42289,7 +42289,21 @@ var ConfigSchema = external_exports.object({
 });
 function parseSplitLines(raw) {
   if (!raw || !raw.trim()) return [];
-  return raw.split(/[\r\n,]+/).map((s) => s.trim()).filter((s) => s.length > 0);
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map((s) => typeof s === "string" ? s.trim() : String(s).trim()).map((s) => s.replace(/^['"]+|['"]+$/g, "").trim()).filter((s) => s.length > 0);
+      }
+    } catch {
+    }
+  }
+  let content = trimmed;
+  if (content.startsWith("[") && content.endsWith("]")) {
+    content = content.slice(1, -1).trim();
+  }
+  return content.split(/[\r\n,]+/).map((s) => s.trim()).map((s) => s.replace(/^[-*]\s+/, "").trim()).map((s) => s.replace(/^['"]+|['"]+$/g, "").trim()).filter((s) => s.length > 0);
 }
 function parseBooleanInput(raw, defaultValue) {
   if (typeof raw === "boolean") return raw;
@@ -47509,6 +47523,18 @@ var SEVERITY_RANKS = {
   medium: 3,
   low: 4
 };
+var EXCLUSION_LABELS = {
+  user_pattern: "Custom pattern (`exclude-patterns`)",
+  default_pattern: "Default pattern (lockfiles, vendor, build artifacts, assets)",
+  mandatory_secret: "Protected secret or credential pattern",
+  removed_file: "Deleted / removed file",
+  missing_or_binary_patch: "Binary file or patch unavailable",
+  ai_guard_prompt_injection: "Skipped by AI safety guard",
+  credential_marker_detected: "Credential pattern detected in diff",
+  file_bytes_exceeded: "File patch exceeded size limit",
+  total_input_bytes_exceeded: "PR patch exceeded total size limit",
+  tokens_exceeded: "PR patch exceeded token budget"
+};
 function formatFindingComment(finding, fingerprint) {
   const badge = SEVERITY_ICONS[finding.severity] || finding.severity.toUpperCase();
   const lines = [
@@ -47581,7 +47607,7 @@ function formatSummaryComment(data) {
     lines.push("");
   } else if (data.reasonCode === "provider_http_503" || data.reasonCode?.includes("503")) {
     lines.push("> [!WARNING]");
-    lines.push("> ### \u26A0\uFE0F Upstream Provider Temporarily Overloaded (HTTP 503)");
+    lines.push("> ### Upstream Provider Temporarily Overloaded (HTTP 503)");
     lines.push("> The AI provider servers are temporarily experiencing high traffic or capacity limits.");
     lines.push(">");
     lines.push("> **Why this happens:**");
@@ -47591,9 +47617,29 @@ function formatSummaryComment(data) {
     lines.push("> **How to resume:**");
     lines.push("> - Wait **15 to 30 seconds** and comment `/review` on this PR to re-trigger.");
     lines.push("");
+  } else if (data.reasonCode === "provider_http_404" || data.reasonCode?.includes("404")) {
+    lines.push("> [!WARNING]");
+    lines.push("> ### Model Not Found or Invalid (HTTP 404)");
+    lines.push(`> The AI model \`${cleanModel}\` was not found or is unsupported by provider \`${cleanProvider}\`.`);
+    lines.push(">");
+    lines.push("> **Why this happens:**");
+    lines.push("> - The specified model identifier does not exist or is deprecated upstream.");
+    lines.push(">");
+    lines.push("> **How to fix:**");
+    lines.push(`> - Update the \`model\` input in your workflow YAML (e.g. \`gemini-2.5-flash\` or \`gemini-1.5-flash\` for Google Gemini).`);
+    lines.push("");
+  } else if (data.reasonCode === "provider_http_401" || data.reasonCode?.includes("401") || data.reasonCode?.includes("403")) {
+    lines.push("> [!WARNING]");
+    lines.push("> ### Provider Authentication Failed (HTTP 401/403)");
+    lines.push(`> The provider \`${cleanProvider}\` rejected the API key or authentication credentials.`);
+    lines.push(">");
+    lines.push("> **How to fix:**");
+    lines.push("> - Verify your provider API key secret in repository **Settings \u2192 Secrets and variables \u2192 Actions**.");
+    lines.push("> - Ensure the secret is mapped in your workflow (e.g. `provider-api-key: ${{ secrets.GEMINI_API_KEY }}`).");
+    lines.push("");
   } else if (data.reasonCode && !data.reasonCode.includes("429") && !data.reasonCode.includes("503") && data.reasonCode !== "invalid_findings_dropped" && data.reasonCode !== "static_reports_skipped" && data.reasonCode !== "publication_incomplete" && data.reasonCode !== "stale_head_discarded" && data.status !== "completed") {
     lines.push("> [!WARNING]");
-    lines.push(`> ### \u26A0\uFE0F AI Provider Service Notice (\`${sanitizeFindingContent(data.reasonCode)}\`)`);
+    lines.push(`> ### AI Provider Service Notice (\`${sanitizeFindingContent(data.reasonCode)}\`)`);
     lines.push("> The AI provider encountered an issue while generating the review.");
     lines.push(">");
     lines.push("> **How to resume:**");
@@ -47615,6 +47661,12 @@ function formatSummaryComment(data) {
     lines.push("Review halted before completion due to API rate limiting (HTTP 429). See alert above for recovery steps.");
   } else if (data.reasonCode === "provider_http_503" || data.reasonCode?.includes("503")) {
     lines.push("Review halted because upstream AI provider servers were temporarily overloaded (HTTP 503). See alert above to retry.");
+  } else if (data.reasonCode === "provider_http_404" || data.reasonCode?.includes("404")) {
+    lines.push("Review halted because the specified AI model was not found. See alert above to verify the model identifier.");
+  } else if (data.reasonCode === "provider_http_401" || data.reasonCode?.includes("401") || data.reasonCode?.includes("403")) {
+    lines.push("Review halted due to provider authentication failure. See alert above to verify your API key secret.");
+  } else if (data.status === "partial" && data.reasonCode?.startsWith("provider_")) {
+    lines.push("Review could not be completed due to an AI provider error. See alert notice above for details.");
   } else if (data.reasonCode === "request_budget_exceeded" || data.reasonCode === "all_files_exceeded_budgets") {
     lines.push("Review skipped because the PR changes exceeded the configured token or size limits.");
   } else if (data.reviewedFiles === 0) {
@@ -47658,8 +47710,10 @@ function formatSummaryComment(data) {
   lines.push(`- **Skipped / Excluded Files:** ${data.skippedFilesCount}`);
   const reasonEntries = Object.entries(data.excludedReasons);
   if (reasonEntries.length > 0) {
+    lines.push("- **Exclusion Details:**");
     for (const [reason, count] of reasonEntries) {
-      lines.push(`  - \`${sanitizeFindingContent(reason)}\`: ${count}`);
+      const label = EXCLUSION_LABELS[reason] || `\`${sanitizeFindingContent(reason)}\``;
+      lines.push(`  - ${label}: ${count}`);
     }
   }
   lines.push(`- **Total Detected Issues:** ${data.totalFindingsCount}`);
@@ -47674,15 +47728,20 @@ function formatSummaryComment(data) {
     }
   }
   lines.push("");
+  lines.push("\u{1F4A1} *Tip: To exclude files or folders, use `exclude-patterns` in your workflow YAML or configure `.github/ai-review.md`.*");
+  lines.push("");
   lines.push("</details>");
   lines.push("");
   lines.push("> [!TIP]");
-  lines.push("> - Comment `/review` to re-trigger a full review on the latest commit.");
-  lines.push("> - Comment `/review <file>` (e.g. `/review path/to/file`) to re-check a specific file.");
+  lines.push("> ### \u{1F4A1} Quick Commands & Guidance");
+  lines.push("> - **\u{1F4AC} Ask a Question:** Reply directly to any review comment with `/ask <question>` or `/explain` to discuss suggestions.");
+  lines.push("> - **\u{1F504} Re-trigger Review:** Comment `/review` on this PR to re-analyze the latest commit.");
+  lines.push("> - **\u{1F3AF} Target Specific File:** Comment `/review <path>` (e.g. `/review src/auth.ts`) to review only that file.");
+  lines.push('> - **\u{1F6AB} Exclude Files:** Add `exclude-patterns` in your workflow YAML (e.g. `exclude-patterns: "**/*.test.ts, docs/**"`) or configure `.github/ai-review.md`.');
+  lines.push("> - **\u2699\uFE0F Custom Instructions:** Add `.github/ai-review.md` in your repository to enforce team-specific coding standards.");
   lines.push("");
-  lines.push("> [!NOTE]");
-  lines.push("> This advisory review was generated by a bounded AI action to assist maintainers.");
-  lines.push("> It does not certify security, guarantee defect-free code, or replace human review.");
+  lines.push("---");
+  lines.push("<sub>\u{1F916} *Advisory: Automated AI review helps identify potential issues to assist maintainers. It does not replace human review or guarantee defect-free code.*</sub>");
   lines.push("");
   lines.push(SUMMARY_MARKER);
   lines.push(`Incremental: ${data.incrementalSkipped ?? 0} unchanged file(s) skipped. Related context: ${data.contextFiles ?? 0} file(s).`);

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { LIMIT_CEILINGS, parseConfig, resolveCustomInstructions } from '../src/config.js';
+import { LIMIT_CEILINGS, parseConfig, parseSplitLines, resolveCustomInstructions } from '../src/config.js';
 
 describe('Configuration parsing & limit ceilings', () => {
   it('parses valid configuration with defaults', () => {
@@ -248,5 +248,47 @@ describe('Instruction file boundaries', () => {
       fs.symlinkSync(outside, path.join(root, 'linked-directory'));
       expect(resolveCustomInstructions('linked-directory/rules.md', root)).not.toContain('OUTSIDE_SENTINEL');
     } finally { fs.rmSync(base, { recursive: true, force: true }); }
+  });
+});
+
+describe('File exclusion & pattern parsing (parseSplitLines)', () => {
+  it('parses JSON array pattern inputs', () => {
+    const patterns = parseSplitLines('["**/*.test.ts", "docs/**", "dist/*"]');
+    expect(patterns).toEqual(['**/*.test.ts', 'docs/**', 'dist/*']);
+  });
+
+  it('parses multiline YAML inputs with quotes and bullets', () => {
+    const raw = `
+      - "**/*.test.ts"
+      - 'src/**/*.spec.ts'
+      - docs/**
+    `;
+    const patterns = parseSplitLines(raw);
+    expect(patterns).toEqual(['**/*.test.ts', 'src/**/*.spec.ts', 'docs/**']);
+  });
+
+  it('parses comma-separated patterns', () => {
+    const patterns = parseSplitLines('**/*.test.ts, docs/**, *.lock');
+    expect(patterns).toEqual(['**/*.test.ts', 'docs/**', '*.lock']);
+  });
+
+  it('parses bracketed list without quotes', () => {
+    const patterns = parseSplitLines('[**/*.test.ts, docs/**]');
+    expect(patterns).toEqual(['**/*.test.ts', 'docs/**']);
+  });
+
+  it('preserves glob character classes like *.[jt]s', () => {
+    const patterns = parseSplitLines('["src/**/*.[jt]s", "test/**"]');
+    expect(patterns).toEqual(['src/**/*.[jt]s', 'test/**']);
+  });
+
+  it('config integrates parsed excludePatterns correctly', () => {
+    const config = parseConfig({
+      githubToken: 'ghp_fake_token',
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      excludePatterns: ['**/*.test.ts', 'docs/**'],
+    });
+    expect(config.excludePatterns).toEqual(['**/*.test.ts', 'docs/**']);
   });
 });

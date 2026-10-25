@@ -10,7 +10,13 @@ Action's logs, review comments, and plain-language suggestions.
 
 ## Current state
 
-- Released GitHub Action: `v0.2.18` (tested and bundled in `dist/index.js`).
+- Released GitHub Action: `v0.2.19` (tested and bundled in `dist/index.js`).
+- Enhanced PR summary aesthetics and file exclusion:
+  - Eliminated awkward stacked alert boxes (`> [!TIP]` followed by `> [!NOTE]`) and double warning emojis.
+  - Added dedicated Model Not Found (HTTP 404) and Authentication (HTTP 401/403) recovery guidance.
+  - Formatted comprehensive, beautiful `> [!TIP]` callout covering Q&A (`/ask`), re-trigger (`/review`), file targeting (`/review <path>`), file exclusions (`exclude-patterns`), and custom guidelines (`.github/ai-review.md`).
+  - Added human-readable exclusion labels in the breakdown details with clear guidance on configuring `exclude-patterns`.
+  - Hardened pattern parser (`parseSplitLines`) to seamlessly support multiline YAML, comma-separated lists, and JSON arrays.
 - Clean, direct Action integration (`uses: Ananthang/ai-code-review@v1`): zero `if:` statements required
   in client workflows, with built-in pure event classification, safe pre-check skips, and thread Q&A support.
 - Implemented: file-patch incremental review, bounded JS/TS import context,

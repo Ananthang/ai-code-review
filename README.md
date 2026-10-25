@@ -49,12 +49,19 @@ jobs:
         uses: Ananthang/ai-code-review@v1
         with:
           provider: ${{ vars.AI_PROVIDER || 'gemini' }}
-          model: ${{ vars.AI_MODEL }}
-          provider-api-key: ${{ secrets.AI_PROVIDER_API_KEY }}
+          model: ${{ vars.AI_MODEL || 'gemini-2.5-flash' }}
+          fallback-model: 'gemini-2.5-flash-lite'
+          max-requests: 2
+          provider-api-key: ${{ secrets.AI_PROVIDER_API_KEY || secrets.GEMINI_API_KEY }}
           allow-external-provider: 'true'
           incremental: 'true'
           min-severity: 'medium'
           require-evidence: 'true'
+          exclude-patterns: |
+            **/*.test.ts
+            **/*.spec.ts
+            docs/**
+            *.generated.*
 ```
 
 > [!NOTE]
@@ -175,6 +182,64 @@ You can also write custom guidelines directly inside your workflow file:
 
 > [!NOTE]
 > To temporarily disable custom rules when a `.github/ai-review.md` exists, set `custom-instructions: 'none'` or `'off'`.
+
+## Excluding Files from Review (`exclude-patterns`)
+
+You can exclude specific files, directories, or glob patterns from AI code review using the `exclude-patterns` input in your workflow.
+
+### Supported Formats
+
+**Multiline YAML list (recommended):**
+```yaml
+- uses: Ananthang/ai-code-review@v1
+  with:
+    exclude-patterns: |
+      **/*.test.ts
+      **/*.spec.ts
+      docs/**
+      *.generated.*
+      packages/legacy/**
+```
+
+**Comma-separated string:**
+```yaml
+- uses: Ananthang/ai-code-review@v1
+  with:
+    exclude-patterns: '**/*.test.ts, **/*.spec.ts, docs/**, *.lock'
+```
+
+**JSON array:**
+```yaml
+- uses: Ananthang/ai-code-review@v1
+  with:
+    exclude-patterns: '["**/*.test.ts", "docs/**"]'
+```
+
+### Built-in Automatic Exclusions
+For safety and efficiency, the following file types are **always automatically excluded**:
+- **Secrets & Keys:** `.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*`, `credentials.json`, `.aws/**`, `.ssh/**`
+- **Lockfiles:** `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `Gemfile.lock`, `Cargo.lock`, `go.sum`
+- **Build & Dependency Artifacts:** `node_modules/**`, `dist/**`, `build/**`, `.next/**`, `target/**`, `coverage/**`
+- **Media, Binaries & Fonts:** `.png`, `.jpg`, `.svg`, `.ico`, `.pdf`, `.zip`, `.wasm`, `.dylib`, `.woff`, `.woff2`
+- **Minified Files:** `*.min.js`, `*.min.css`
+
+Excluded files and reasons are transparently summarized in the collapsible **📊 Review & Exclusions Breakdown** section on every PR summary comment.
+
+---
+
+## Interactive Commands & Thread Q&A
+
+Maintainers can interact directly with the AI reviewer through PR comments and inline review discussions:
+
+| Command | Where to post | What it does |
+| --- | --- | --- |
+| `/ask <question>` | Reply on any inline review comment | Answers questions or explains why an issue was flagged |
+| `/explain` | Reply on any inline review comment | Provides a detailed explanation of the suggested change |
+| `/review` | PR conversation timeline comment | Re-triggers a full automated review on the latest commit |
+| `/review <path>` | PR conversation timeline comment | Runs a targeted review on only the specified file (e.g. `/review src/auth.ts`) |
+
+> [!NOTE]
+> Only authorized repository collaborators with write, maintain, or admin access can trigger reviews or ask questions.
 
 ## Handling Rate Limits (`fallback-model`)
 

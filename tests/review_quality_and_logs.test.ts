@@ -203,6 +203,80 @@ describe('PR Review Comments and Formatting', () => {
 
     expect(summary503).toContain('Upstream Provider Temporarily Overloaded (HTTP 503)');
     expect(summary503).not.toContain('Google Gemini occasionally returns');
+    expect(summary503).not.toContain('### ⚠️');
+  });
+
+  it('renders actionable Model Not Found notice for HTTP 404 with guidance and no double warning icons', () => {
+    const summary404 = formatSummaryComment({
+      status: 'partial',
+      reasonCode: 'provider_http_404',
+      model: 'models/gemini-3.6-flash',
+      provider: 'gemini',
+      reviewedFiles: 2,
+      totalChangedFiles: 2,
+      skippedFilesCount: 0,
+      excludedReasons: {},
+      totalFindingsCount: 0,
+      novelFindingsCount: 0,
+      publishedFindingsCount: 0,
+      dedupedCount: 0,
+    });
+
+    expect(summary404).toContain('Model Not Found or Invalid (HTTP 404)');
+    expect(summary404).toContain('Update the `model` input in your workflow YAML');
+    expect(summary404).toContain('gemini-2.5-flash');
+    expect(summary404).not.toContain('### ⚠️');
+    expect(summary404).toContain('Review halted because the specified AI model was not found.');
+  });
+
+  it('renders comprehensive tips covering Q&A, re-reviews, exclusions, and guidelines', () => {
+    const summary = formatSummaryComment({
+      status: 'completed',
+      model: 'gemini-2.5-flash',
+      provider: 'gemini',
+      reviewedFiles: 2,
+      totalChangedFiles: 2,
+      skippedFilesCount: 0,
+      excludedReasons: {},
+      totalFindingsCount: 0,
+      novelFindingsCount: 0,
+      publishedFindingsCount: 0,
+      dedupedCount: 0,
+    });
+
+    expect(summary).toContain('> [!TIP]');
+    expect(summary).toContain('### 💡 Quick Commands & Guidance');
+    expect(summary).toContain('/ask <question>');
+    expect(summary).toContain('/review');
+    expect(summary).toContain('/review <path>');
+    expect(summary).toContain('exclude-patterns');
+    expect(summary).toContain('.github/ai-review.md');
+    expect(summary).toContain('🤖 *Advisory:');
+    // Ensure > [!TIP] is NOT immediately followed by > [!NOTE]
+    expect(summary).not.toContain('> [!TIP]\n> - Comment `/review`\n> [!NOTE]');
+  });
+
+  it('displays human-readable exclusion labels in breakdown with exclusion guidance', () => {
+    const summary = formatSummaryComment({
+      status: 'completed',
+      model: 'gemini-2.5-flash',
+      provider: 'gemini',
+      reviewedFiles: 1,
+      totalChangedFiles: 4,
+      skippedFilesCount: 3,
+      excludedReasons: {
+        user_pattern: 2,
+        default_pattern: 1,
+      },
+      totalFindingsCount: 0,
+      novelFindingsCount: 0,
+      publishedFindingsCount: 0,
+      dedupedCount: 0,
+    });
+
+    expect(summary).toContain('Custom pattern (`exclude-patterns`): 2');
+    expect(summary).toContain('Default pattern (lockfiles, vendor, build artifacts, assets): 1');
+    expect(summary).toContain('Tip: To exclude files or folders, use `exclude-patterns`');
   });
 
   it('clearly labels provider-reported vs conservative token estimates in summary telemetry', () => {
